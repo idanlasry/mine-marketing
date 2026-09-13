@@ -1,8 +1,7 @@
 how much money did rule-driven actions save or burn?
 
 ## Rule impact — method
-
-Each rule is judged on its own, one rule at a time, with five direct answers: what it did, did it stop the bleeding, how peers that met the same condition did (and what it missed in ACC-04), one $ impact with a verdict, and data issues. There is no single bulk table — per-rule numbers are checked before any verdict.
+first it will be a brief overview on the rules, rule segmantation, and rule preformence view, then each rule will be evaluated alone, with a skill that been built. the file will consist only takeaways, important tables, and bottom lines, but the skill and script are available in the repo.
 
 ### Rule segmentation
 
@@ -23,113 +22,107 @@ Rule names as logged in `rule_executions.rule_name`.
 | | | R12 | Decrease -40% (min 9) | Budget Decrease \| OWN RSOC \| ROI <= -50 \| Budget <= 65$ |
 | 5. Undo | Did it try to undo the right thing? | R09 | Turn ON | Turn On \| Automation Mistake - Today \| OWN RSOC |
 
-### Base definitions
+### Rule view
 
-| # | definition |
-|---|---|
-| B1 | **Decision** = rule x adset x `action_date`. Repeated firings on the same adset-day collapse into one decision. |
-| B2 | **Before** = the first SUCCESS firing of the adset-day — the last numbers the rule saw before it changed anything. |
-| B4 | **Window**: a budget cut's "after" runs to the end of the week, or until the same rule acts on that adset again. |
-| B5 | **Overlaps**: when two rules succeed on the same adset-day, both get full credit (both acted). Same-segment overlaps are flagged as redundant rules. |
-| B6 | **Dates** are keyed on `action_date` (the reporting date), not the UTC date of `action_time`. Rollover decisions (fired before midnight UTC, logged against the next date) are flagged. |
-| B8 | **Profit before** = `spend_at_action × today_roi_at_action`. ROI is rounded to 2 decimals, so up to ~0.5% of spend in error. |
+Successful decisions per rule (rule × adset × `action_date`), action-day totals.
 
-(B3 exposure and B7 conversions were used by the earlier Block B and are retired.)
+| rule | action | successful firings | failed firings | decisions | losers / winners at action | losers / winners end of day | loser → winner same day | spend $ | profit $ | ROI |
+|---|---|---|---|---|---|---|---|---|---|---|
+| R01 | OFF, age ≥5 | 4 | 0 | 3 | 3 / 0 | 2 / 1 | 1 | 31 | −1 | −3.7% |
+| R03 | OFF, never positive, age >2 | 17 | 19 | 10 | 10 / 0 | 10 / 0 | 0 | 1 | −1 | −94.6% |
+| R04 | OFF, day 1 | 109 | 0 | 39 | 39 / 0 | 39 / 0 | 0 | 37 | −28 | −77.7% |
+| R05 | OFF, profit | 6 | 1 | 5 | 5 / 0 | 5 / 0 | 0 | 8 | −6 | −70.7% |
+| R06 | OFF, profit, age ≤3 | 1 | 0 | 1 | 1 / 0 | 1 / 0 | 0 | 3 | −1 | −34.3% |
+| R08 | OFF, age = 4 | 13 | 2 | 9 | 9 / 0 | 6 / 3 | 3 | 24 | −7 | −30.2% |
+| R11 | OFF, never positive, age >3 | 2 | 0 | 1 | 1 / 0 | 1 / 0 | 0 | 0 | 0 | −100% |
+| **Turn-offs** | | **152** | **22** | **68** | **68 / 0** | **64 / 4** | **4** | **104** | **−44** | |
+| R02 | cut −20% | 6 | 17 | 6 | 6 / 0 | 3 / 3 | 3 | 300 | +22 | +7.3% |
+| R07 | cut −40% | 1 | 0 | 1 | 1 / 0 | 0 / 1 | 1 | 54 | +8 | +15.3% |
+| R10 | cut −15% | 2 | 0 | 2 | 1 / 1 | 1 / 1 | 1 | 584 | +57 | +9.8% |
+| R12 | cut −40% | 3 | 3 | 3 | 3 / 0 | 2 / 1 | 1 | 36 | −5 | −13.7% |
+| **Budget cuts** | | **12** | **20** | **12** | **11 / 1** | **6 / 6** | **6** | **974** | **+82** | |
+| R09 | ON | 0 | 8 | 0 | – | – | – | – | – | – |
+| **All rules** | | **164** | **50** | **80** | | | | | | |
 
-### The five answers per rule
+Source: `task_A_script.py` RULE.1. At action = `today_roi_at_action` of the first successful firing; end of day = that adset-day's final profit in performance.
 
-| # | answer | how |
-|---|---|---|
-| 1 | **What it did** | by `action_date`: decisions, repeat firings (all firings − distinct adset-days), success / failed runs, adsets, overlaps (`rule@adset`), rollover |
-| 2 | **Did it stop the bleeding?** | the acted adsets: profit before the action (B8), profit on the rest of that day (day total − before), profit on the later days of the week. Also FB conversions (Meta) vs estimated conversions (internal model) on the action day and later days; conversions reported on later days with $0 spend are the delay |
-| 3 | **Peers and missed** | **peers** = adsets in the 5 accounts with no rules that met the rule's condition, on their first matching day, before 06-12; what they made or lost on the later days. **Missed** = ACC-04 adsets that met the condition and the rule never acted on (split: no rule acted / another rule acted that day) |
-| 4 | **Impact $ and verdict** | one $ figure per decision (below), summed per rule |
-| 5 | **Data issues** | failed runs, repeat firings, rule name ≠ condition that ran, decisions that fail the condition on the engine's own numbers, engine age ≠ spend day, live budget ≠ metadata budget, rollover, spend after a turn-off |
+**Caveats.**
+- If two rules acted on the same adset-day, its spend counts under both rules, so the totals may be slightly high.
+- The end-of-day check covers only the action day. Whether a killed adset would have recovered later in the week is the $ impact step.
+- "At action" ROI reads too low early in the day (data issue 11), so some "flippers" were never real losers.
 
-**Rule conditions** are replayed as the engine ran them (`condition_name`), with inclusive thresholds, on each day's end-of-day numbers:
+# 1- computing the rules outcome
 
-| rule | condition replayed |
-|---|---|
-| R01 | age ≥ 5 |
-| R02 | −30% < ROI ≤ −10% |
-| R03 | positive days = 0 and age > 2 |
-| R04 | age = 1 and budget used ≥ 35% and ROI ≤ −50% |
-| R05 | today's profit ≤ −$1 and budget used ≥ 15% (named "Total Profit <= -2.5$") |
-| R06 | today's profit ≤ −$1.25 and age ≤ 3 and total profit ≤ −$3 (named "<= -4$") |
-| R07 | ROI ≥ −50% and budget > $65 |
-| R08 | age = 4 |
-| R09 | not replayed (Turn ON "automation mistake" is not a performance condition) |
-| R10 | −10% < ROI ≤ 5% and budget ≥ $100 |
-| R11 | positive days = 0 and age > 3 |
-| R12 | ROI ≤ −50% and budget ≤ $65 |
+### Calculations rule by rule
+#### Rule calculation formula:
+##### Ive decided to calculate the roles preformence differantly for the two main types of rules. from after rule one, ive analysis ive built a skill analysing and building metadat tabales on each rule
+- Cut budget rules: (ROI at close) × budget removed, counted only if the whole day's spend ≥ 95% of the new budget. Action day only.
+- Turn-off rules: (the adset's average daily profit on its spend 3 days before the action). No history (day 1) → flagged and roi*0.8 of daily original budget. its might be missing future days but it suppoused to punish uncertainty
 
-Age = `spend_day_no`; budget = metadata `daily_budget / 100`; budget used = day spend ÷ budget; total profit and positive days count this week only.
+#### rule 1 (task_A_script.py:227): break even
+- Break even, 3 adsets fired, two lost with a day before loses, one flipped and earned (it also earned the day before)
+- 65 Misses adsets that could have been fire but dident, which is good but weird, otherwise 383$ of profit would been lost
+#### rule 2- breaks even
+#### rule 3- right on 10/10, saving + 12.68
+#### rule 4 -+$20
+- 70 repeat firings on adsets already turned off
+- its harder to tell what is the real savings, but I've decided to go to budget saved * 0.5 (other small 1 day adsets in other account reached only 0.65 of their budget + I guess some revenue will add up)
 
-### Impact — how much each decision saved or missed
+#### rule 5 - + 4.80
+- hidden age limits? it fired only on adset that ages 1–2 days and skipped 33 older losing adset-day
 
-One $ figure per decision, and both directions count:
-- **+ = saved:** the adset would have lost money.
-- **− = missed income:** the adset would have made money.
+#### rule 6 and forth:
+- I used the skill to get an assessment of all the next rules outcome:
 
-Failed runs are $0: nothing changed.
+Bottom line All rules
 
-| action | impact | why this way |
-|---|---|---|
-| Turn OFF | −(peer later profit per day left × days left) | the adset is off, so what it would have done is taken from peers that met the same condition and were left running |
-| Budget cut | −(budget removed per day × ROI after the cut × days left) | the adset keeps running, so its ROI after the cut is observed |
+| | losers cut $ | winners cut $ | net $ |
+|---|---|---|---|
+| Turn-offs | +41.70 | −10.38 | +31.32 |
+| Budget cuts | +4.61 | −14.78 | −10.17 |
+| **ACC-04** | **+46.31** | **−25.16** | **+21.15** (+21.22 with the R05/R06 overlap counted once) |
 
-| term | definition |
-|---|---|
-| peer later profit per day left | Σ peers' profit on the days after their matching day ÷ Σ the days left in the week after it. Peers that stopped on their own count as $0 days |
-| days left (turn-off) | whole days after the action until 06-12 |
-| days left (cut) | days after the action on which the adset still spent, within the B4 window, plus the unspent share of the action day (1 − `spend_at_action` / budget). $0 if another rule turned the adset off that day |
-| ROI after the cut | revenue ÷ spend after the action, over the rest of the action day and the following days in the window, − 1 |
-| verdict | **too small to matter** when \|net\| < 1% of ACC-04's week spend ($25.86); otherwise **right** (net > 0) or **wrong** |
+#### Major take-aways are:
+- budget cut rules was pure losses, just wasn't worth it. due to the revenue delay the engine cut winners more then loosers
+- Turn-off rules was not smart enough on old adsets (blindly killing)
+- R04 did the most of the savings. most of the new, small adsets losing money(over all acounts), the rule cut them properly, with more accurate, or smart agent, it can keep those who delayed while keeping the spends tight
 
-**Assumptions.**
-- A turned-off adset would have done what peers that met the same condition did.
-- Peers are checked on end-of-day numbers; the engine checks during the day.
-- The metadata budget is one end-of-week snapshot, so budget conditions on peers are approximate.
-- The budget a cut removed would have been spent at the ROI the adset had after the cut.
-- History is only what the week holds (06-06 → 06-12).
+# 2 - wrong rules
+### R08 (and also R01)- Blind shut down, ignoring market winners
+- It didn't always cut winners, it was mixed, big winners and big losers too
+- It blindly ignores the past outcome, and even current revenue
 
-**Concrete cases (question 2).** Decisions sorted by impact: the ones with the most missed income are the candidates for "a competent human wouldn't have done this".
+31255165214890 case — the adset's week:
 
-### ACC-04 leftovers
+| date | age | spend $ | profit $ | ROI | rule |
+|---|---|---|---|---|---|
+| 06-06 | 2 | 23.70 | +26.44 | +112% | |
+| 06-07 | 3 | 54.41 | +28.29 | +52% | |
+| 06-08 | 4 | 9.60 | +2.88 | +30% | R08 |
+| 06-09 → 12 | | 0 | 0 | | off for good |
 
-Every ACC-04 adset-day with spend that no rule acted on, in four buckets: **loser, matched a rule** (missed) · **loser, no rule covers it** (a gap) · **winner, no rule matched** (rightly spared) · **winner, matched a rule** (a rule would have hit a winner). Loser = profit < 0 that day.
+The decision:
 
-### Decisions made
+| adset | date | fired (UTC) | 3-day ROI (engine) | ROI at fire | ROI at close | spent at fire | spent at close |
+|---|---|---|---|---|---|---|---|
+| 31255165214890 | 06-08 | 06-07 22:30 | +5% | −87% | +30% | $8.23 | $9.60 |
 
-| decision | why |
-|---|---|
-| Each rule gets the five answers only. | Extra KPIs made the method too complicated to follow and defend. |
-| A decision is rule × adset × `action_date`; "before" is the first successful firing. | Repeat firings on an adset already acted on change nothing: R04 fired 109 times for 39 decisions. |
-| Failed runs are counted in answer 1 and are $0 in impact. Failed runs as a control group are left for a later session. | The question is what the rules did. |
-| When two rules act on the same adset-day, both get the impact. | Both acted. So rule totals can't be added into a week total. |
-| Dates are keyed on `action_date`, with rollover flagged. | `action_time` is UTC; late firings belong to the next reporting date. |
-| Metadata budgets are used as `daily_budget / 100`. | They are in cents: divided by 100 they match the live Meta budget on 39 of 39 R04 decisions, raw on 0. |
-| Peers are adsets that met the rule's own condition. | Grouping peers by age × ROI band ignored R04's budget condition and flipped its result to "0 of 39 right, −$5.88". Peers that met R04's full condition lost −$14.02 later. |
-| Conditions are replayed as `condition_name`, not `rule_name`. | That is what the engine ran: R05 and R06 ran different thresholds from their names, and the engine's numbers at the action fit `condition_name`. |
-| A cut on an adset another rule turned off the same day is $0; cut days left count only days the adset still spent. | Otherwise R12 showed −$249 on an adset R08 turned off that morning. |
-| Verdict "too small to matter" below 1% of ACC-04's week spend. | Separates rules that moved money from noise, with one fixed bar for every rule. |
-| `task_A_script.py` is a template only; earlier versions are in `Archive/task_A_script_v1.py` and `_v2.py`. | Results live in `Task A/RULE_OUTPUTS.md`, not in code comments. |
+### rule 10 - Budget Decrease | OWN RSOC | -10 < ROI <= 5 | Budget >= 100$
+well. its just bad rule, if budget is more than 100, that probably means the ad set is a shark, it decided early on on low ROI (due to the revenue latency) and killed a strong adset.
 
-## Rule-by-rule results
-
-Filled in one rule at a time, after review.
+| adset | date | fired (UTC) | 3-day ROI | ROI at fire | ROI at close | spent at fire | spent at close |
+|---|---|---|---|---|---|---|---|
+| 31302925337341 | 06-07 | 05:30 | +49% | +4% | 0% | $109 | $320 |
+| 31302925337341 | 06-08 | 02:00 | +25% | −4% | +22% | $70 | $264 |
 
 ## Data issues
 
-| # | issue | how we found it | how we handled it |
+| # | issue | how I found it | how we handled it |
 |---|---|---|---|
-| 1 | `metadata.daily_budget` is in cents, not dollars | divided by 100 it matches the live Meta budget in `rule_executions` on 39 of 39 R04 decisions; raw it matches 0 | every budget from metadata is used as `daily_budget / 100` |
-| 2 | The engine ran a different condition than the rule's name | `condition_name` ≠ `rule_name`: R05 named "Total Profit <= -2.5$" ran "Today_profit <= -1$"; R06 named "<= -4$" ran "<= -3"; the engine's numbers at the action fit `condition_name` | conditions replayed as `condition_name` |
-| 3 | Rules fired outside their own limits | engine numbers at the action: R11 fired at total days = 3 (condition > 3); R07 at ROI −51% (condition ≥ −50%); R05 once at today's profit −$0.25 (a rollover firing) | reported; impact still counted, since the action happened |
-| 4 | Engine "total days" ≠ performance `spend_day_no` | R03: 5 of 10 decisions (engine 4–5 days vs spend day 1–2); no metadata date explains all cases | age for peers = `spend_day_no`; flagged per rule |
-| 5 | Metadata budget is one end-of-week snapshot | live budget ≠ metadata on every budget-cut decision (e.g. 31626016833981: live $128.93 vs metadata $31.67) | budget conditions on peers are approximate; impact uses the live budget from `rule_executions` |
-| 6 | Revenue on days with no spend | ACC-04: 3 adset-days, $9.75 (other accounts ≤ $1.04); shows up as R08 "+$6.55 later" with $0 spend | kept as-is |
-| 7 | Spend continues after a turn-off | same-day spend after the action: R04 $4.64, R08 $3.07, R01 $1.22 | counted in "rest of day" |
-| 8 | Many failed runs | 50 of 214 executions: R03 19, R02 17 (13 on one adset on 06-09), R09 8 of 8 | counted, $0 impact; separate analysis deferred |
-| 9 | Rollover | action_time before midnight UTC logged on the next date: R03 7 of 10 decisions | keyed on `action_date`, flagged |
-| 10 | Duplicate performance rows | 72 byte-identical rows, ACC-03 on 06-09 | `performance_scoped` = `SELECT DISTINCT` (4,947 → 4,875) |
+| 1 | Reporting day starts at 21:00 UTC — a firing at 22:30 UTC counts for the next day | noticed R01 and R08 fire at night (UTC) and checked it: `action_date` = next day on 21 of 21 firings at 21–23 UTC | noted; everything keyed on `action_date`, not `DATE(action_time)`. Late firings flagged: they see 1–2 hours of the new day, so ROI at fire reads far too low. Age rules fire exactly then, since total days ticks over at 21:00 UTC |
+| 2 | old_budget new_budget are deceiving | checking the rules execution table, old budget didn't verify informative, while new budget and current_budget_from_fb are informative with the rule logic toward the set_budget; fusing set_budget as new adset real budget and new budget as previous | use set budget and current_budget_from_fb |
+| 3 | Spend continues after a turn-off | related to the delay hinted in the brief | counted in "rest of day" |
+| 4 | Many failed runs | 50 of 214 executions: R03 19, R02 17 (13 on one adset on 06-09), R09 8 of 8 | counted, $0 impact; separate analysis deferred |
+| 5 | Duplicate performance rows | looked for dups in the performance table, deliberately | `performance_scoped` = `SELECT DISTINCT` (4,947 → 4,875) |
+| 6 | Revenue delay within the day | deliberately looked for revenue gap in the data sets, found that between the recurring rules failed executions | using it.. it is a bad feature of the engine, it needs to take into account when planning automations and rules |
+| 7 | Spend far above the adset budget | it popped up when I look at the characteristic of the rule one activated adsets (the table of the skill show spend and budget side by side). adset 31191755212537 for example has spent 41–72 every day on a $7.62–12.70 budget (Meta overspend allows up to 1.75×, according to Claude), with no matching buyer change. it might be a bug or an engine feature of shark adsets | rules diminish impact on these adsets was zeroed |

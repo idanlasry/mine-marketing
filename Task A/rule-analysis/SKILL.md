@@ -28,7 +28,7 @@ The runner prints steps 1–6. Conditions live in `CONDITIONS` in `run_rule.py` 
 | 4. Took effect? | 4 | Turn-off: did spend stop (later days with no spend)? Cut: did spend actually drop? Revenue that came after the fire. Human (`ui_*`) budget changes after the rule — a reversal? |
 | 5. Met condition, not hit | 5 | ACC-04 adset-days meeting the condition, fired vs not, winning/losing at close, accumulated ROI. What would the rule hit if it ran as named — and was not firing a loss or luck? |
 | 6. Odd behaviour | 6a, 6b | Fires far less than eligible (switched on late? only on losing-at-the-moment?). Rollover firings, decisions on the last data day (no after-window), engine age ≠ spend_day_no, overspending adsets. |
-| 7. Value | 7 | One $ per decision (+ saved / − missed), split like R01/R02: **winner at close** (cost of cutting winners) vs **loser at close** (saving from cutting losers), then the net. No cutoff. Rules below. |
+| 7. Value | 7 | One $ per decision (+ saved / − missed), summed; too small to matter if \|total\| < $25.86. Rules below. |
 | 8. Bottom line | — | Right on X of Y · value $ · what is out of reach · data issues. |
 
 ### Value rules (stage 7) — decided with the user
@@ -36,7 +36,7 @@ The runner prints steps 1–6. Conditions live in `CONDITIONS` in `run_rule.py` 
 | action | value | counts when |
 |---|---|---|
 | Budget cut | −(ROI at close) × budget removed (live budget − last set budget) | the **whole day's** spend reached ≥ 95% of the new budget; else zero. Action day only. No 0.9 discount. |
-| Turn-off | −(accumulated ROI over the **3 calendar days before** the action day) × **the action day's spend** | ROI = SUM(revenue) / SUM(spend) − 1 over the window. No spend in the window (new, or paused, or window before 06-06) → fallback: −(action-day ROI at close) × action-day spend (= that day's loss), flag it. Window partly before 06-06 → ROI over the days present, flag it. No days-left factor. |
+| Turn-off | −(adset's average daily profit over the **last 3 days** before the action day) × days left in the data | zero-spend days in the window count as zero profit. No spend in the window (new, or paused before) → no value (blank, not zero), flag it. Last data day (06-12) → zero. Window before 06-06 (data start) → no value, flag it; partly before → average over the days present, flag it. Why last 3 days, not all history: a dying adset's early wins made a right turn-off look like a loss (R01, 31167350331032). |
 
 ## Report format
 
