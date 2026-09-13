@@ -1,52 +1,44 @@
+-------Phase 0 — recon (task_a_recon.py) ---------------
+Loaded the CSVs into BigQuery and asked Claude to check that all tables connect by keys. I investigated the findings further in `task_a_recon.py`; every step is there as SQL views.
 
--------Phase 0 ---------------
-1. invastigating, phase 0 - i uploaded the csv to bigquery and asked claude to bring to life step 0- check wether all the tabels are connected via keys- to major findings land by the probe which i furthur invstigated with dedicated script (task_a_recon.py)
-    a.  ACC-04 is 100% 14-digit + all 214 rule executions belong to ACC-04 alone + ACC-04 is the best account (ROAS 1.19, top of book, $3,076 revenue on $2,586), so the rules were aimed at the healthiest big spender or created it? 
-    b. 2026-06-09 all 13 executions hit a single adset via a single rule 
-    c. Human buyers acted on all six accounts - which can be natural control group
-    d. 8 rules executed after preformence 
-    e. the accounts are 1:1 adset-to-campaign
-    table tracked last date and not relevant
-all of this represented in the script via sql tables
-   
-2. filtering and cleaning all applyed in the py file:
-    a. filter for only the adstes that appear 
-    in preformance table, its my playgroung
+**1. Duplicates**
+Finding: 72 duplicate (adset_id, date) pairs, byte-identical, all in ACC-03 on 2026-06-09 (each exactly 2 rows) — one slice loaded twice, not conflicting data.
+Decision: drop the 72 duplicates (4947 → 4875 rows). No keep-rule needed, the copies are identical.
 
-3. i've asked claude to check on outlaires, nulls and suspicious rul;e execution patterns, and added the relevant queries to (task_a_recon.py)
-findings:
-    Adset 31302925337341 in ACC-04 is outlier in spent but look valids in numbels
-    From 03:30 to 16:30 UTC there were 27 failed actions and zero successes
-    R02 retried every 30 minutes and got "No budget to change" 
+**2. Scope**
+Decision: keep only adsets that appear in the performance table — that's my playground. All filtering and cleaning is applied in the script.
 
+**3. Accounts**
+- ACC-04 is the most profitable account (ROAS 1.19, $3,076 revenue on $2,586 spend).
+- ACC-04 is the only account where rules run (all 214 executions); its adset IDs are all 14-digit.
+- Open: were the rules aimed at the healthiest big spender, or did they make it that way?
+- Accounts are 1:1 adset-to-campaign.
+- One table tracked only the last date — not relevant.
 
-Finding: All 72 duplicate (adset_id, date) pairs are byte-identical rows confined to a single account-day (ACC-03, 2026-06-09, every group exactly 2 rows) whose 72 adsets sit normally on that account's daily ramp — a double-emission of one slice, not conflicting restatements or missing data.
+**4. Execution patterns and outliers**
+- 2026-06-09: all 13 executions hit one adset via one rule (R02 retrying every 30 min, "No budget to change").
+- 03:30–16:30 UTC: 27 failed actions, zero successes.
+- Adset 31302925337341 (ACC-04) is a spend outlier, but its numbers look valid.
 
-Decision: Drop with plain df.drop_duplicates() (4947 → 4875 rows, 4875 unique keys); no keep-rule is needed since no column differs within any grou
+-------Task B — architecture (logged 2026-09-13 17:57) ---------------
+Asked Claude to choose between prompt chaining, routing, parallelization and orchestrator-workers.
 
+Decision: prompt chaining as the backbone, routing in code, adsets run in parallel. Orchestrator-workers rejected for the live loop — its cost is unpredictable against the $30/day cap and it has no fixed place to enforce limits.
 
-Finding: rule_executions carries four budget columns. set_budget / current_budget_from_fb equals the rule's stated % on 17/17 budget rows (set/new_budget: 12/17, set/old_budget: 0/17), and buyer_actions logs the same change (update_ad_set_budget, same timestamp, fb → set). old_budget / new_budget instead repeat the adset's previous budget change, often a buyer's — which is why "Decrease" rows show new_budget > old_budget.
+Pushback (mine): "many agents" is mostly hype — it's LLM prompts inside a good harness. Kept the brief's role vocabulary, but the doc says only 2 roles are LLMs (Decision, Reviewer) and the rest is code.
 
-Decision: A rule's budget change = current_budget_from_fb → set_budget. old_budget / new_budget are not used to measure rule actions.
+Rejected: Claude's long, multi-section discussion replies — asked for short answers.
 
-Finding: spend_at_action is cumulative same-day spend up to action_time (monotonic, ≤ day spend on 212/214 rows), so the day splits into before (spend_at_action, today_roi_at_action) and after (perf day totals minus at-action).
+Decision (my design): phase 1 handles losers only. Actions: wait / diminish / pause_for X hours / revive in +30% steps up to the manager's budget. Pause only after 2 LLM interventions without recovery. The LLM is prompted again when its wait expires or ROI reverses or dips.
 
-Decision: Revenue at action = spend_at_action × (1 + today_roi_at_action) — roi is 2dp (≤0.5% of spend error); rpc/cpa reconstruction was off by ~0.05 ROI and is not used. First firing per adset-day-action only; failed executions used as the comparison group.
+Changed: Claude flagged a conflict between the auto-rules and the agent and suggested locks. I chose an A/B test on different accounts instead.
 
-Decision: In the per-rule template, failed executions are counted but not calculated (no exposure or before/after effect) — the question is what the rules did, not what they could have done; failed runs get their own analysis in a later session.
+Decision: test on ACC-02, a middle account, not the worst one. Claude's per-account query backed it: ACC-05 has too little spend to prove anything.
 
+Decision: dropped the "same time yesterday" baseline — the engine's readings aren't stored and the snapshot is daily. Kept Claude's pushback: a 4 h time-of-day guard, because early-day ROI reads too low.
 
--------Rule impact method ---------------
-Asked Claude for a one-shot per-rule summary table; rejected it — fast, but errors hide in bulk and a wrong number costs more than a careful pass. Chose instead: segment the rules, define KPIs per segment, then a manual rule-by-rule pass.
+Decision: 30-min ROI checks only for adsets the agent is working on. Sharks (big ROI + big spend) → notify a human only.
 
-Decision: 12 rules in 5 segments — Day 1-2 kill (R04 R05 R06), Never profitable (R03 R11), Age kill (R01 R08), Budget cut (R02 R07 R10 R12), Undo (R09). Full map, KPIs and column definitions in INVESTIGATION.md "Rule impact — method".
+Rejected: Claude's detailed Pydantic input/output schemas and its 9-table design — too complex for the assignment. Kept a short step / input / output flow per agent (Decision, Reviewer) and 2 tables (`interventions`, `agent_log`); more tracking tables noted for later.
 
-Decision: each rule gets a fixed two-block table by action_date (activity + money), plus its segment KPIs.
-  - decision = rule x adset x action_date; "before" = first SUCCESS firing; ROI always Σrev/Σspend.
-  - exposure = what the action removed (OFF: budget − spend so far; Decrease: budget − set_budget).
-  - accumulated "after" stops at the same rule's next action on that adset (no double count).
-  - overlapping rules both get credit (both acted); same-segment overlap = flagged redundant.
-  - failed runs counted, not calculated; rollover decisions flagged, negatives shown as-is.
-  - replay on the other 5 accounts deferred to the rule-by-rule pass; failed-run control to a later session.
-
-Rejected: the earlier segment summary's exposure figures (~$1,012 Age kill, ~$3,491 Budget cut) — no budget or spend column reproduces them; not carried forward.
+Open: the §3 thresholds are Claude's starting values from ACC-02 data, not yet approved.

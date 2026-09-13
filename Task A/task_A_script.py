@@ -1,9 +1,19 @@
 # %%
-"""Task A / Step 1 — pull the working columns.
+"""Task A — rule template.
 
-Three views on the scoped base from `task_a_recon.py` (CH.2), narrowed to the
-columns the analysis uses. Views, not tables: fix the scope upstream and these
-follow.
+Shared queries for the rule-by-rule pass (INVESTIGATION.md "Rule impact — method").
+Template only: no rule sections, no results. Set RULE, then run the cells below —
+or from the repo root: uv run python .claude/skills/rule-analysis/run_rule.py R04
+
+Five answers per rule:
+  1. what it did          BLOCK_A
+  2. stopped the bleeding K_BLEEDING
+  3. vs peers + missed    K_PEERS
+  4. impact $ + verdict   K_IMPACT, K_IMPACT_DECISIONS
+  5. data issues          K_ISSUES
+
+Previous versions: Archive/task_A_script_v1.py (exploration, R04 method v1),
+Archive/task_A_script_v2.py (Block B, age x ROI-band peers).
 """
 
 import pandas as pd
@@ -23,246 +33,40 @@ q = lambda sql: client.query(
 ).to_dataframe()
 
 
-# %% rule_executions
-# ! no `action` column exists here. `action_name` ("Turn OFF", "Increase Budget")
-# ! is the one that matches auto_rules.action, so it is aliased to `action`.
-q("""
-CREATE OR REPLACE VIEW $.rx_sel AS
-SELECT DISTINCT
-       adset_id, action_date, action_time, rule_id,
-       action_name AS action,
-       old_budget, new_budget, set_budget, current_budget_from_fb,
-       response, budget_level,
-       -- what the engine saw at evaluation time (same-day, cumulative up to action_time)
-       spend_at_action, today_roi_at_action, last_3_days_roi_at_action
-FROM $.rule_executions_scoped
-""")
-
-# %% daily_adset_performance
-q("""
--- * DEDUP: the 72 identical ACC-03 / 06-09 copies. Lossless, no tie-break.
-CREATE OR REPLACE VIEW $.perf_sel AS
-SELECT DISTINCT
-       adset_id, date, spend, revenue, fb_conversions,
-       estimated_conversions, spend_day_no, fb_ad_account_id
-FROM $.performance_scoped
-""")
-
-# %% auto_rules
-# * no adset_id in this table, so no _scoped view to sit on — 12-row lookup.
-q("""
-CREATE OR REPLACE VIEW $.rules_sel AS
-SELECT rule_id, rule_name, action
-FROM $.auto_rules
-""")
-
-
 # =============================================================================
-#  EXEC SUMMARY — the week in one row
-# =============================================================================
-
-# %% week totals: spend, conversions, revenue, profit, roi, rule executions
-# ? profit and roi recomputed from spend/revenue, not read from the file's columns
-q("""
-WITH perf AS (
-  SELECT ROUND(SUM(spend), 2)                                   AS spend,
-         SUM(fb_conversions)                                    AS fb_conv,
-         ROUND(SUM(estimated_conversions), 1)                   AS est_conv,
-         ROUND(SUM(revenue), 2)                                 AS revenue,
-         ROUND(SUM(revenue) - SUM(spend), 2)                    AS profit,
-         ROUND(SAFE_DIVIDE(SUM(revenue) - SUM(spend), SUM(spend)), 4) AS roi
-  FROM $.perf_sel
-),
-rx AS (
-  SELECT COUNT(*)                         AS rules_executed,
-         COUNTIF(response = 'SUCCESS')    AS rules_succeeded,
-         COUNTIF(response != 'SUCCESS')   AS rules_failed
-  FROM $.rx_sel
-)
-SELECT * FROM perf CROSS JOIN rx
-""")
-# * spend $8,912 -> revenue $9,790 -> profit $878, ROI +9.9%. Thin but positive.
-# * recomputed profit == file's profit column to the cent (0 row mismatches).
-# * est_conv / fb_conv = 1.053: internal model credits 5% more than Meta.
-# ! 214 executed but only 164 SUCCESS — 50 (23%) never happened. Quote 164.
-# ! all 214 are ACC-04; the other 5 accounts ran with zero rules.
-# ! daily spend peaks 06-07 ($1,739) and ends 06-12 at $843 (-52%). Mandate is grow.
-# ? 06-12 is the freshest day — revenue may not be fully settled yet.
-
-# %% same totals per day, with rule successes/failures
-# ! rules keyed on action_date, not DATE(action_time): action_time is UTC and
-# ! late-evening firings roll to the next action_date (06-07T22:30Z -> 06-08).
-q("""
-WITH perf AS (
-  SELECT date,
-         ROUND(SUM(spend), 2)                                   AS spend,
-         SUM(fb_conversions)                                    AS fb_conv,
-         ROUND(SUM(estimated_conversions), 1)                   AS est_conv,
-         ROUND(SUM(revenue), 2)                                 AS revenue,
-         ROUND(SUM(revenue) - SUM(spend), 2)                    AS profit,
-         ROUND(SAFE_DIVIDE(SUM(revenue) - SUM(spend), SUM(spend)), 4) AS roi
-  FROM $.perf_sel
-  GROUP BY date
-),
-rx AS (
-  SELECT action_date                      AS date,
-         COUNTIF(response = 'SUCCESS')    AS rules_succeeded,
-         COUNTIF(response != 'SUCCESS')   AS rules_failed
-  FROM $.rx_sel
-  GROUP BY action_date
-)
-SELECT perf.*,
-       IFNULL(rules_succeeded, 0) AS rules_succeeded,
-       IFNULL(rules_failed, 0)    AS rules_failed
-FROM perf LEFT JOIN rx USING (date)
-ORDER BY date
-""")
-# * rows sum back to week totals: spend $8,912, 214 executions. No day lost in the join.
-# * 06-06 -> 06-07: 110 executions, 106 SUCCESS. Spend +43%, profit -$246.
-# ! 06-08: 27 of 46 failed (token outage). 06-09: 13/13 failed (R02 retry loop).
-
-# %% same totals per account, with rule executions
-# ? perf_sel has no account_name -> adset->account map from performance_scoped
-q("""
-WITH acct AS (SELECT DISTINCT adset_id, account_name FROM $.performance_scoped),
-perf AS (
-  SELECT account_name,
-         ROUND(SUM(spend), 2)                                   AS spend,
-         SUM(fb_conversions)                                    AS fb_conv,
-         ROUND(SUM(estimated_conversions), 1)                   AS est_conv,
-         ROUND(SUM(revenue), 2)                                 AS revenue,
-         ROUND(SUM(revenue) - SUM(spend), 2)                    AS profit,
-         ROUND(SAFE_DIVIDE(SUM(revenue) - SUM(spend), SUM(spend)), 4) AS roi
-  FROM $.perf_sel JOIN acct USING (adset_id)
-  GROUP BY account_name
-),
-rx AS (
-  SELECT account_name,
-         COUNT(*)                         AS rules_executed,
-         COUNTIF(response = 'SUCCESS')    AS rules_succeeded,
-         COUNTIF(response != 'SUCCESS')   AS rules_failed
-  FROM $.rx_sel JOIN acct USING (adset_id)
-  GROUP BY account_name
-)
-SELECT perf.*,
-       IFNULL(rules_executed, 0)  AS rules_executed,
-       IFNULL(rules_succeeded, 0) AS rules_succeeded,
-       IFNULL(rules_failed, 0)    AS rules_failed
-FROM perf LEFT JOIN rx USING (account_name)
-ORDER BY account_name
-""")
-# * spend sums back to week totals ($8,911.85). ACC-04 = 29% of spend, 56% of profit.
-# ! all 214 executions are ACC-04; ACC-05 (-21% ROI, -$147) ran with zero rules.
-
-
-# =============================================================================
-#  RULE EXECUTIONS — which budget column is real, and ROI before / after
-# =============================================================================
-# TODO failed executions (50): counted only in the per-rule template, not calculated —
-#      analyse their effect (incl. as a control group) in a separate session.
-
-# %% budget columns: which base does set_budget apply the rule's % to?
-q("""
-SELECT action, COUNT(*) n,
-  COUNTIF(ABS(set_budget / current_budget_from_fb - pct) < 0.002) set_over_fb_ok,
-  COUNTIF(ABS(set_budget / new_budget - pct)             < 0.002) set_over_new_ok,
-  COUNTIF(ABS(set_budget / old_budget - pct)             < 0.002) set_over_old_ok
-FROM (SELECT *, 1 - CAST(REGEXP_EXTRACT(action, r'-(\\d+)%') AS INT64) / 100 AS pct
-      FROM $.rx_sel WHERE set_budget IS NOT NULL)
-GROUP BY action
-""")
-# * set_budget / current_budget_from_fb == the rule's % on 17/17 rows (new: 12/17, old: 0/17).
-# * the change a rule makes = current_budget_from_fb -> set_budget. buyer_actions confirms it:
-# *   update_ad_set_budget at the same timestamp, e.g. 06-07 02:30 128.93 -> 103.14.
-# ! old_budget / new_budget are NOT this action. They echo the adset's previous budget change
-# !   (often a buyer's): 06-10 19:30 R02 shows 103.14 -> 82.51 = buyer ui_adjust on 06-07 14:16.
-# ! decreases show new_budget > old_budget (avg x1.33) — only makes sense as a lagged echo.
-# ? set_budget is blank on Turn OFF/ON (no budget change) and on OAuth failures.
-# ? current_budget_from_fb is NULL on OAuth failures (Meta never read) — failed, nothing changed.
-
-# %% ROI before / after the action, same day
-# ? before = what the engine saw: spend_at_action, today_roi_at_action (ROI up to the action).
-# ? after  = rest of the day: day spend/revenue (perf_sel) minus what had accrued at action_time.
-# ? revenue at action rebuilt as spend_at_action * (1 + roi); roi is 2dp -> <=0.5% of spend error.
-# ? first firing per adset-day-action-outcome only, so repeated firings don't double-count "before".
-# ? failed executions = same trigger, no change applied -> a natural comparison group.
-q("""
-WITH p AS (SELECT adset_id, date, SUM(spend) spend, SUM(revenue) revenue
-           FROM $.perf_sel GROUP BY 1, 2),
-r AS (
-  SELECT r.*, p.spend AS day_spend, p.revenue AS day_rev,
-         r.spend_at_action * (1 + r.today_roi_at_action)            AS rev_at_action,
-         p.spend   - r.spend_at_action                               AS spend_after,
-         p.revenue - r.spend_at_action * (1 + r.today_roi_at_action) AS rev_after,
-         ROW_NUMBER() OVER (PARTITION BY r.adset_id, r.action_date, r.action, r.response = 'SUCCESS'
-                            ORDER BY r.action_time) AS k
-  FROM $.rx_sel r JOIN p ON p.adset_id = r.adset_id AND p.date = r.action_date
-)
-SELECT IF(action LIKE 'Decrease%', 'Decrease', action)                      AS action,
-       response = 'SUCCESS'                                                 AS applied,
-       COUNT(*)                                                             AS n,
-       ROUND(SUM(spend_at_action), 2)                                       AS spend_before,
-       ROUND(SAFE_DIVIDE(SUM(rev_at_action), SUM(spend_at_action)) - 1, 3)  AS roi_before,
-       ROUND(SUM(spend_after), 2)                                           AS spend_after,
-       ROUND(SAFE_DIVIDE(SUM(rev_after), SUM(spend_after)) - 1, 3)          AS roi_after,
-       ROUND(SAFE_DIVIDE(SUM(day_rev), SUM(day_spend)) - 1, 3)              AS roi_day,
-       ROUND(SAFE_DIVIDE(SUM(spend_after), SUM(day_spend)), 3)              AS share_spend_after,
-       ROUND(AVG(last_3_days_roi_at_action), 3)                             AS avg_l3d_roi,
-       COUNTIF(rev_after < 0)                                               AS neg_rev_after
-FROM r WHERE k = 1
-GROUP BY 1, 2 ORDER BY 1, 2
-""")
-# * spend_at_action is cumulative intraday: never decreases across firings (0/132 pairs),
-# *   <= the day's perf spend on 212/214 rows (max 103.7%). Safe to subtract.
-# * Turn OFF applied (66): ROI -62% before on $91; only 9.4% of day spend came after the action.
-# * Decrease applied (12): ROI -10% before ($358) -> +19% after ($616). Day ends +8.5%.
-# * Decrease failed (8):  ROI -23% before ($170) -> +15% after ($225). Day ends -1.5%.
-# !   the adsets recovered after a decrease whether or not it was applied -> regression to
-# !   the mean, not proof the decrease worked. n is tiny (12 vs 8).
-# ! Turn OFF "after" ROI +133% on $9 is late-attributed revenue from pre-OFF clicks, not a
-# !   healthy tail. 6 rows have negative rev_after (revenue restated down after the action).
-# ! roi_before (intraday) and last_3_days roi disagree: decreases fired on -10%/-23% today
-# !   while the 3-day ROI was +22%/+24% — the rules act on intraday noise.
-
-# %% Turn OFF: did spend actually stop?
-q("""
-WITH p AS (SELECT adset_id, CAST(date AS DATE) date, SUM(spend) spend FROM $.perf_sel GROUP BY 1, 2),
-off AS (
-  SELECT r.adset_id, CAST(r.action_date AS DATE) d, p.spend - r.spend_at_action AS spend_after,
-         ROW_NUMBER() OVER (PARTITION BY r.adset_id, r.action_date ORDER BY r.action_time) k
-  FROM $.rx_sel r JOIN p ON p.adset_id = r.adset_id AND p.date = CAST(r.action_date AS DATE)
-  WHERE r.action = 'Turn OFF' AND r.response = 'SUCCESS'
-)
-SELECT COUNT(*)                          AS n_off,
-       COUNTIF(spend_after > 0.01)       AS spent_after_off_same_day,
-       ROUND(SUM(spend_after), 2)        AS same_day_spend_after_off,
-       COUNTIF(nxt.adset_id IS NOT NULL) AS has_next_day_row,
-       COUNTIF(nxt.spend > 0.01)         AS spent_next_day
-FROM off LEFT JOIN p nxt ON nxt.adset_id = off.adset_id AND nxt.date = DATE_ADD(off.d, INTERVAL 1 DAY)
-WHERE k = 1
-""")
-# * 0 of 63 adsets turned OFF spent anything the next day — Turn OFF works.
-# ! 57/66 still spent $9.44 total the same day after a SUCCESS OFF (Meta delivery lag).
-# !   Repeat OFF firings on the same adset show spend_at_action still climbing (06-12 R01
-# !   16:30 -> 17:00: $20.28 -> $20.97).
-
-
-# =============================================================================
-#  RULE TEMPLATE — one rule at a time (definitions: INVESTIGATION.md "Rule impact — method")
+#  RULE TEMPLATE
 # =============================================================================
 # ? dedup: reads *_scoped only. performance_scoped = SELECT DISTINCT (4947 -> 4875, one row per
-# ?   adset x date); rule_executions / metadata have no duplicates; buyer_actions duplicates
-# ?   all fall outside scope (buyer_actions_scoped 715 rows, all distinct).
-# ? set RULE, run Block A, then Block B. The total row comes from GROUP BY ROLLUP, so
-# ?   adsets are distinct across the week and overlaps are a union — not sums.
+# ?   adset x date); rule_executions / metadata have no duplicates.
+# ? rule totals can't be added across rules (overlapping decisions count for both).
 
-# %% RULE — set the rule to analyse
-RULE = "R02"
-qr = lambda sql: q(sql.replace("@RULE", RULE))
+# %% TEMPLATE — shared queries (run this cell first; nothing executes here)
+RULE = "R__"  # set before running, e.g. "R04"
 
-# %% Block A — activity, by action_date
-# ? every day with any firing, including fail-only days.
-qr("""
+# ? each rule's condition as the engine ran it (rule_executions.condition_name), checked on the
+# ?   day's end-of-day numbers. R05 / R06 condition_name differs from rule_name — the engine's
+# ?   numbers at the action fit condition_name, so that is used.
+# ?   columns: age (spend_day_no), budget (metadata daily_budget / 100), usage (spend / budget),
+# ?   roi (today), profit (today), total_profit and positive_days (this week only, up to the day).
+# ?   thresholds are inclusive (>= / <=): the engine fires on the limits.
+CONDITIONS = {
+    "R01": "age >= 5",
+    "R02": "roi > -0.30 AND roi <= -0.10",
+    "R03": "positive_days = 0 AND age > 2",
+    "R04": "age = 1 AND usage >= 0.35 AND roi <= -0.50",
+    "R05": "profit <= -1 AND usage >= 0.15",                             # name: Total Profit <= -2.5$
+    "R06": "profit <= -1.25 AND age <= 3 AND total_profit <= -3",        # name: total profit <= -4$
+    "R07": "roi >= -0.50 AND budget > 65",
+    "R08": "age = 4",
+    "R09": "FALSE",  # Turn ON "automation mistake": not a performance condition, no replay
+    "R10": "roi > -0.10 AND roi <= 0.05 AND budget >= 100",
+    "R11": "positive_days = 0 AND age > 3",
+    "R12": "roi <= -0.50 AND budget <= 65",
+}
+qr = lambda sql: q(sql.replace("@COND", CONDITIONS.get(RULE, "FALSE")).replace("@RULE", RULE))
+
+# ? Answer 1 — what the rule did, by action_date. Every day with any firing, incl. fail-only days.
+BLOCK_A = """
 WITH rx AS (SELECT *, CAST(action_date AS DATE) ad FROM $.rule_executions_scoped),
 r AS (SELECT * FROM rx WHERE rule_id = '@RULE'),
 -- B1: decision = rule x adset x action_date with at least one SUCCESS
@@ -296,63 +100,301 @@ agg AS (
 SELECT IFNULL(CAST(DATE_DIFF(ad, DATE '2026-06-06', DAY) + 1 AS STRING), 'total') day,
        CAST(ad AS STRING) date, * EXCEPT (ad)
 FROM agg ORDER BY ad IS NULL, ad
-""")
+"""
 
-# %% Block B — money, by action_date (successful decisions only; blank on fail-only days)
-qr("""
+# ? shared CTEs.
+# ?   p   = daily performance per adset
+# ?   f   = p + the columns the rule conditions use
+# ?   lat = what each adset-day was followed by: later days until 06-12
+# ?   dec = this rule's decisions (B1, B2: first SUCCESS firing of the adset-day)
+BASE_CTE = """
 WITH p AS (
-  SELECT adset_id, CAST(date AS DATE) dt,
-         SUM(spend) spend, SUM(IFNULL(revenue, 0)) rev, SUM(IFNULL(estimated_conversions, 0)) ec
-  FROM $.performance_scoped GROUP BY 1, 2
+  SELECT adset_id, account_name, CAST(date AS DATE) dt,
+         SUM(spend) spend, SUM(IFNULL(revenue, 0)) rev, MAX(spend_day_no) sdn,
+         SUM(IFNULL(fb_conversions, 0)) fb, SUM(IFNULL(estimated_conversions, 0)) ec
+  FROM $.performance_scoped GROUP BY 1, 2, 3
 ),
-days AS (SELECT DISTINCT CAST(action_date AS DATE) ad FROM $.rule_executions_scoped WHERE rule_id = '@RULE'),
--- B2: before = first SUCCESS firing of the adset-day
-first_ok AS (
+f AS (
+  SELECT p.adset_id, p.account_name, p.dt, p.spend, p.rev, p.fb, p.ec,
+    p.sdn age, b.budget, SAFE_DIVIDE(p.spend, b.budget) usage,
+    SAFE_DIVIDE(p.rev, p.spend) - 1 roi, p.rev - p.spend profit,
+    SUM(p.rev - p.spend) OVER w total_profit,
+    SUM(IF(p.spend > 0 AND p.rev > p.spend, 1, 0)) OVER w positive_days
+  FROM p LEFT JOIN (SELECT adset_id, daily_budget / 100 budget FROM $.metadata_scoped) b
+    ON b.adset_id = p.adset_id
+  WINDOW w AS (PARTITION BY p.adset_id ORDER BY p.dt ROWS UNBOUNDED PRECEDING)
+),
+lat AS (
+  SELECT f.adset_id, f.dt, DATE_DIFF(DATE '2026-06-12', f.dt, DAY) days_left,
+    IFNULL(SUM(n.spend), 0) later_spend, IFNULL(SUM(n.rev - n.spend), 0) later_profit,
+    COUNTIF(n.spend > 0) later_spend_days,
+    IFNULL(SUM(n.fb), 0) later_fb, IFNULL(SUM(n.ec), 0) later_ec,
+    IFNULL(SUM(IF(n.spend = 0, n.fb, 0)), 0) later_fb_no_spend,
+    IFNULL(SUM(IF(n.spend = 0, n.ec, 0)), 0) later_ec_no_spend
+  FROM f LEFT JOIN p n ON n.adset_id = f.adset_id AND n.dt > f.dt
+  GROUP BY 1, 2, 3
+),
+fo AS (
   SELECT *, CAST(action_date AS DATE) ad FROM $.rule_executions_scoped
   WHERE rule_id = '@RULE' AND response = 'SUCCESS'
   QUALIFY ROW_NUMBER() OVER (PARTITION BY adset_id, action_date ORDER BY action_time) = 1
 ),
-dec AS (
-  SELECT adset_id, ad,
-    LEAD(ad) OVER (PARTITION BY adset_id ORDER BY ad)                               next_ad,  -- B4
-    CASE WHEN UPPER(action_name) LIKE 'TURN OFF%' THEN current_budget_from_fb - spend_at_action
-         WHEN UPPER(action_name) LIKE 'DECREASE%' THEN current_budget_from_fb - set_budget
-         WHEN UPPER(action_name) LIKE 'TURN ON%'  THEN -current_budget_from_fb END exposure, -- B3
-    spend_at_action                                                                 s0,
-    IFNULL(SAFE_DIVIDE(spend_at_action, today_cpa_at_action), 0)                    c0,       -- B7
-    spend_at_action * (1 + today_roi_at_action)                                     r0        -- B8
-  FROM first_ok
+oth AS (
+  SELECT DISTINCT adset_id, CAST(action_date AS DATE) ad FROM $.rule_executions_scoped
+  WHERE rule_id != '@RULE' AND response = 'SUCCESS'
 ),
--- following days, stopping at the same rule's next decision on the adset (B4)
-nxt AS (
-  SELECT dec.adset_id, dec.ad, SUM(n.spend) s, SUM(n.ec) c, SUM(n.rev) r
-  FROM dec JOIN p n
-    ON n.adset_id = dec.adset_id AND n.dt > dec.ad AND n.dt < IFNULL(dec.next_ad, DATE '9999-12-31')
+-- peers and missed: adsets this rule never acted on, on the first day they matched its condition
+m AS (
+  SELECT f.* FROM f
+  WHERE f.spend > 0 AND IFNULL((@COND), FALSE)
+    AND f.adset_id NOT IN (SELECT adset_id FROM fo)
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY f.adset_id ORDER BY f.dt) = 1
+),
+grp AS (
+  SELECT '1 acted by @RULE' grp, f.* FROM f JOIN fo ON fo.adset_id = f.adset_id AND fo.ad = f.dt
+  UNION ALL
+  SELECT CASE WHEN m.account_name != 'ACC-04' THEN '2 peers: 5 no-rule accounts'
+              WHEN EXISTS (SELECT 1 FROM oth WHERE oth.adset_id = m.adset_id AND oth.ad = m.dt)
+                THEN '4 ACC-04 missed, another rule acted'
+              ELSE '3 ACC-04 missed, no rule acted' END, m.*
+  FROM m
+  WHERE m.account_name = 'ACC-04' OR m.dt < DATE '2026-06-12'  -- peers need later days to observe
+),
+g AS (SELECT grp.*, lat.* EXCEPT (adset_id, dt, later_fb, later_ec, later_fb_no_spend, later_ec_no_spend)
+      FROM grp JOIN lat USING (adset_id, dt)),
+peer AS (
+  SELECT COUNT(*) peer_adsets, SAFE_DIVIDE(SUM(later_profit), SUM(days_left)) peer_profit_per_day
+  FROM g WHERE grp LIKE '2%'
+)"""
+
+# ? Answer 2 — did it stop the bleeding? The acted adsets: profit before the action, the rest of
+# ?   that day (spend that still came through), and the later days. Before = first SUCCESS firing (B2, B8).
+K_BLEEDING = BASE_CTE + """
+SELECT COUNT(*) decisions, COUNT(DISTINCT fo.adset_id) adsets,
+  ROUND(SUM(fo.spend_at_action), 2) spend_before,
+  ROUND(SUM(fo.spend_at_action * fo.today_roi_at_action), 2) profit_before,
+  ROUND(SAFE_DIVIDE(SUM(fo.spend_at_action * fo.today_roi_at_action), SUM(fo.spend_at_action)), 3) roi_before,
+  ROUND(SUM(f.spend - fo.spend_at_action), 2) spend_rest_of_day,
+  ROUND(SUM(f.profit - fo.spend_at_action * fo.today_roi_at_action), 2) profit_rest_of_day,
+  ROUND(SUM(l.later_spend), 2) spend_later_days,
+  ROUND(SUM(l.later_profit), 2) profit_later_days,
+  ROUND(SAFE_DIVIDE(SUM(l.later_profit), SUM(l.later_spend)), 3) roi_later_days,
+  COUNTIF(l.later_spend_days > 0) adsets_spent_later,
+  -- conversions: Meta (fb) vs the internal model (est). Action day = whole day (fb isn't logged at the action).
+  -- "no spend" = later days with $0 spend: anything reported there arrived late (the delay).
+  SUM(f.fb) fb_conv_action_day, ROUND(SUM(f.ec), 2) est_conv_action_day,
+  SUM(l.later_fb) fb_conv_later_days, ROUND(SUM(l.later_ec), 2) est_conv_later_days,
+  SUM(l.later_fb_no_spend) fb_conv_later_no_spend, ROUND(SUM(l.later_ec_no_spend), 2) est_conv_later_no_spend
+FROM fo
+LEFT JOIN f   ON f.adset_id = fo.adset_id AND f.dt = fo.ad
+LEFT JOIN lat l ON l.adset_id = fo.adset_id AND l.dt = fo.ad
+"""
+
+# ? Answer 3 — peers and missed. One row per group:
+# ?   1 acted by the rule (its decisions)
+# ?   2 peers: adsets in the 5 accounts with no rules that matched the condition (first matching day)
+# ?   3 ACC-04 adsets that matched but no rule acted that day  -> missed
+# ?   4 ACC-04 adsets that matched, this rule didn't act, another rule did
+# ?   "later" = the days after, until 06-12. profit_per_day_left = later profit / days left in the week.
+K_PEERS = BASE_CTE + """
+SELECT grp, COUNT(*) adsets, ROUND(SUM(spend), 2) day_spend, ROUND(SUM(profit), 2) day_profit,
+  COUNTIF(later_spend_days > 0) spent_later, COUNTIF(later_profit > 0) profitable_later,
+  ROUND(SUM(later_spend), 2) later_spend, ROUND(SUM(later_profit), 2) later_profit,
+  ROUND(SAFE_DIVIDE(SUM(later_profit), SUM(later_spend)), 3) later_roi,
+  ROUND(SAFE_DIVIDE(SUM(later_profit), SUM(days_left)), 3) profit_per_day_left
+FROM g GROUP BY grp ORDER BY grp
+"""
+
+# ? Answer 4 — impact, one $ figure per decision. + = saved (would have lost), - = missed income.
+# ?   Failed runs = $0 (not listed).
+# ?   Turn OFF:   -(peer profit per day left x days left). Peers = group 2 above.
+# ?               days left = whole days after the action until 06-12.
+# ?   Budget cut: -(budget removed per day x ROI after the cut x days left).
+# ?               days left = whole days until 06-12 or the same rule's next decision (B4)
+# ?               + the unspent share of the action day (1 - spend_at_action / budget).
+# ?               ROI after the cut = rest of the action day + following days in that window.
+IMPACT_BASE = BASE_CTE + """,
+dec AS (
+  SELECT fo.adset_id, fo.ad, fo.action_name, fo.total_days_at_action,
+         fo.current_budget_from_fb budget, fo.set_budget, fo.spend_at_action s0,
+         fo.spend_at_action * (1 + fo.today_roi_at_action) r0,
+         UPPER(fo.action_name) LIKE 'TURN OFF%' is_off, UPPER(fo.action_name) LIKE 'DECREASE%' is_cut,
+         IFNULL(DATE_SUB(LEAD(fo.ad) OVER (PARTITION BY fo.adset_id ORDER BY fo.ad), INTERVAL 1 DAY),
+                DATE '2026-06-12') end_d
+  FROM fo
+),
+aft AS (
+  SELECT d.adset_id, d.ad, SUM(a.spend) - ANY_VALUE(d.s0) s_after, SUM(a.rev) - ANY_VALUE(d.r0) r_after,
+         COUNTIF(a.dt > d.ad AND a.spend > 0) spend_days_after
+  FROM dec d JOIN p a ON a.adset_id = d.adset_id AND a.dt BETWEEN d.ad AND d.end_d
   GROUP BY 1, 2
 ),
-x AS (
-  SELECT dec.ad, dec.exposure, dec.s0, dec.c0, dec.r0,
-    IFNULL(day.spend, 0) - dec.s0 s_day, IFNULL(day.ec, 0) - dec.c0 c_day, IFNULL(day.rev, 0) - dec.r0 r_day,
-    IFNULL(nxt.s, 0) s_nxt, IFNULL(nxt.c, 0) c_nxt, IFNULL(nxt.r, 0) r_nxt
-  FROM dec
-  LEFT JOIN p day ON day.adset_id = dec.adset_id AND day.dt = dec.ad
-  LEFT JOIN nxt   ON nxt.adset_id = dec.adset_id AND nxt.ad = dec.ad
+-- another rule turned the adset off the same day: a cut then removes budget that won't be spent
+off_oth AS (
+  SELECT DISTINCT adset_id, CAST(action_date AS DATE) ad FROM $.rule_executions_scoped
+  WHERE rule_id != '@RULE' AND response = 'SUCCESS' AND UPPER(action_name) LIKE 'TURN OFF%'
 ),
-agg AS (
-  SELECT ad,
-    ROUND(SUM(exposure), 2)                                                exposure,
-    ROUND(SUM(s0), 2) spend_before, ROUND(SUM(c0), 2) conv_before, ROUND(SUM(r0), 2) rev_before,
-    ROUND(SAFE_DIVIDE(SUM(r0), SUM(s0)) - 1, 3)                            roi_before,
-    ROUND(SUM(s_day), 2) spend_after_day, ROUND(SUM(c_day), 2) conv_after_day, ROUND(SUM(r_day), 2) rev_after_day,
-    ROUND(SAFE_DIVIDE(SUM(r_day), SUM(s_day)) - 1, 3)                      roi_after_day,
-    ROUND(SUM(s_day + s_nxt), 2) spend_after_acc, ROUND(SUM(c_day + c_nxt), 2) conv_after_acc,
-    ROUND(SUM(r_day + r_nxt), 2) rev_after_acc,
-    ROUND(SAFE_DIVIDE(SUM(r_day + r_nxt), SUM(s_day + s_nxt)) - 1, 3)      roi_after_acc
-  FROM x GROUP BY ROLLUP (ad)
+z AS (
+  SELECT d.*, o.adset_id IS NOT NULL off_by_other_rule,
+    IF(d.is_off, peer.peer_adsets, NULL) peer_adsets, IF(d.is_off, peer.peer_profit_per_day, NULL) peer_profit_per_day,
+    IF(d.is_off, DATE_DIFF(DATE '2026-06-12', d.ad, DAY),
+       IFNULL(a.spend_days_after, 0) + GREATEST(0, 1 - IFNULL(SAFE_DIVIDE(d.s0, d.budget), 1))) days_left,
+    IF(d.is_cut, d.budget - d.set_budget, NULL) budget_cut,
+    IF(d.is_cut, SAFE_DIVIDE(a.r_after, a.s_after) - 1, NULL) roi_after_cut
+  FROM dec d CROSS JOIN peer
+  LEFT JOIN aft a ON a.adset_id = d.adset_id AND a.ad = d.ad
+  LEFT JOIN off_oth o ON o.adset_id = d.adset_id AND o.ad = d.ad
 ),
-k AS (SELECT ad FROM days UNION ALL SELECT CAST(NULL AS DATE))
-SELECT IFNULL(CAST(DATE_DIFF(k.ad, DATE '2026-06-06', DAY) + 1 AS STRING), 'total') day,
-       CAST(k.ad AS STRING) date, agg.* EXCEPT (ad)
-FROM k LEFT JOIN agg ON IFNULL(agg.ad, DATE '1900-01-01') = IFNULL(k.ad, DATE '1900-01-01')
-ORDER BY k.ad IS NULL, k.ad
-""")
+imp AS (
+  SELECT z.*,
+    CASE WHEN is_off THEN -peer_profit_per_day * days_left
+         WHEN is_cut AND off_by_other_rule THEN 0
+         WHEN is_cut THEN -budget_cut * roi_after_cut * days_left END impact
+  FROM z
+)"""
+
+# ? Impact per decision, most missed income first. The top rows are candidate
+# ?   "a competent human wouldn't do this" cases (Task A question 2).
+K_IMPACT_DECISIONS = IMPACT_BASE + """
+SELECT adset_id, CAST(ad AS STRING) action_date, action_name, total_days_at_action age_days,
+  ROUND(days_left, 2) days_left, peer_adsets, ROUND(peer_profit_per_day, 3) peer_profit_per_day,
+  ROUND(budget_cut, 2) budget_cut, ROUND(roi_after_cut, 3) roi_after_cut, ROUND(impact, 2) impact
+FROM imp ORDER BY impact
+"""
+
+# ? Impact — rule total and verdict.
+# ?   verdict: 'too small to matter' when |net| < 1% of ACC-04's week spend; else right (net > 0) / wrong.
+K_IMPACT = IMPACT_BASE + """
+SELECT COUNT(*) decisions, ANY_VALUE(peer_adsets) peer_adsets,
+  COUNTIF(impact > 0) saved_calls, COUNTIF(impact < 0) missed_income_calls, COUNTIF(impact IS NULL) not_computable,
+  ROUND(SUM(IF(impact > 0, impact, 0)), 2) saved,
+  ROUND(SUM(IF(impact < 0, impact, 0)), 2) missed_income,
+  ROUND(SUM(impact), 2) net_impact,
+  ROUND((SELECT SUM(spend) FROM p WHERE account_name = 'ACC-04') * 0.01, 2) materiality_1pct,
+  CASE WHEN COUNT(*) = 0 OR SUM(impact) IS NULL THEN 'no impact'
+       WHEN ABS(SUM(impact)) < (SELECT SUM(spend) FROM p WHERE account_name = 'ACC-04') * 0.01 THEN 'too small to matter'
+       WHEN SUM(impact) > 0 THEN 'right' ELSE 'wrong' END verdict
+FROM imp
+"""
+
+# ? Answer 5 — data issues, the same checklist for every rule.
+# ?   fails_condition_at_action: the engine's own numbers at the action (total_days_at_action,
+# ?     current_budget_from_fb, today_roi_at_action, spend_at_action) don't meet the condition.
+# ?   not_checkable_at_action: the condition needs total profit or positive days, which the engine doesn't log.
+K_ISSUES = BASE_CTE + """,
+rx AS (SELECT * FROM $.rule_executions_scoped WHERE rule_id = '@RULE'),
+fx AS (
+  SELECT f.*, fo.current_budget_from_fb, fo.spend_at_action, fo.action_name, fo.action_time,
+         fo.total_days_at_action, fo.ad
+  FROM fo LEFT JOIN f ON f.adset_id = fo.adset_id AND f.dt = fo.ad
+),
+eng AS (
+  SELECT total_days_at_action age, current_budget_from_fb budget,
+         SAFE_DIVIDE(spend_at_action, current_budget_from_fb) usage, today_roi_at_action roi,
+         spend_at_action * today_roi_at_action profit,
+         CAST(NULL AS FLOAT64) total_profit, CAST(NULL AS INT64) positive_days
+  FROM fo
+)
+SELECT
+  (SELECT COUNT(*) FROM rx)                                                         firings,
+  (SELECT COUNTIF(response != 'SUCCESS') FROM rx)                                   failed_runs,
+  (SELECT COUNT(*) - COUNT(DISTINCT CONCAT(adset_id, action_date)) FROM rx)         repeat_firings,
+  (SELECT COUNTIF(REGEXP_REPLACE(condition_name, r'\\s', '') != REGEXP_REPLACE(rule_name, r'\\s', '')) FROM rx)
+                                                                                    name_differs_from_condition,
+  (SELECT COUNT(*) FROM fx)                                                         decisions,
+  (SELECT COUNTIF((@COND) IS FALSE) FROM eng)                                       fails_condition_at_action,
+  (SELECT COUNTIF((@COND) IS NULL) FROM eng)                                        not_checkable_at_action,
+  (SELECT COUNTIF(total_days_at_action != age) FROM fx)                             engine_age_differs,
+  (SELECT COUNTIF(ABS(budget - current_budget_from_fb) > 0.01) FROM fx)             budget_differs_from_metadata,
+  (SELECT COUNTIF(ad != DATE(CAST(action_time AS TIMESTAMP))) FROM fx)              rollover,
+  (SELECT ROUND(SUM(IF(UPPER(action_name) LIKE 'TURN OFF%', spend - spend_at_action, 0)), 2) FROM fx)
+                                                                                    spend_after_turn_off
+"""
+
+# ? ACC-04 leftovers (not per rule) — every ACC-04 adset-day with spend that no rule acted on,
+# ?   split into losers (profit < 0) and winners, and whether it matched any rule's condition.
+# ?   R09 has no condition and is left out.
+_match = ",\n    ".join(f"IF(IFNULL(({c}), FALSE), '{r}', NULL)" for r, c in CONDITIONS.items() if c != "FALSE")
+LEFT_CTE = """
+WITH p AS (
+  SELECT adset_id, account_name, CAST(date AS DATE) dt,
+         SUM(spend) spend, SUM(IFNULL(revenue, 0)) rev, MAX(spend_day_no) sdn
+  FROM $.performance_scoped GROUP BY 1, 2, 3
+),
+f AS (
+  SELECT p.adset_id, p.account_name, p.dt, p.spend, p.rev,
+    p.sdn age, b.budget, SAFE_DIVIDE(p.spend, b.budget) usage,
+    SAFE_DIVIDE(p.rev, p.spend) - 1 roi, p.rev - p.spend profit,
+    SUM(p.rev - p.spend) OVER w total_profit,
+    SUM(IF(p.spend > 0 AND p.rev > p.spend, 1, 0)) OVER w positive_days
+  FROM p LEFT JOIN (SELECT adset_id, daily_budget / 100 budget FROM $.metadata_scoped) b
+    ON b.adset_id = p.adset_id
+  WINDOW w AS (PARTITION BY p.adset_id ORDER BY p.dt ROWS UNBOUNDED PRECEDING)
+),
+acted AS (
+  SELECT DISTINCT adset_id, CAST(action_date AS DATE) dt FROM $.rule_executions_scoped WHERE response = 'SUCCESS'
+),
+left_ AS (
+  SELECT f.*, ARRAY_TO_STRING([
+    """ + _match + """
+  ], ',') matched_rules
+  FROM f LEFT JOIN acted a ON a.adset_id = f.adset_id AND a.dt = f.dt
+  WHERE f.account_name = 'ACC-04' AND f.spend > 0 AND a.adset_id IS NULL
+),
+b AS (
+  SELECT *, CASE
+      WHEN profit < 0 AND matched_rules != '' THEN '1 loser, matched a rule: missed'
+      WHEN profit < 0                        THEN '2 loser, no rule covers it'
+      WHEN matched_rules = ''                THEN '3 winner, no rule matched: rightly spared'
+      ELSE                                        '4 winner, matched a rule: lucky miss' END bucket
+  FROM left_
+)"""
+
+K_LEFTOVER = LEFT_CTE + """
+SELECT bucket, COUNT(*) adset_days, COUNT(DISTINCT adset_id) adsets,
+  ROUND(SUM(spend), 2) spend, ROUND(SUM(profit), 2) profit, ROUND(SAFE_DIVIDE(SUM(profit), SUM(spend)), 3) roi
+FROM b GROUP BY ROLLUP (bucket) ORDER BY bucket IS NULL, bucket
+"""
+
+# ? which rules the missed losers matched (an adset-day can match several rules)
+K_LEFTOVER_BY_RULE = LEFT_CTE + """
+SELECT r rule, COUNTIF(profit < 0) loser_days, ROUND(SUM(IF(profit < 0, profit, 0)), 2) loser_profit,
+  COUNTIF(profit >= 0) winner_days, ROUND(SUM(IF(profit >= 0, profit, 0)), 2) winner_profit
+FROM b, UNNEST(SPLIT(matched_rules, ',')) r WHERE matched_rules != ''
+GROUP BY r ORDER BY r
+"""
+
+K_LEFTOVER_TOP = LEFT_CTE + """
+SELECT bucket, adset_id, CAST(dt AS STRING) dt, age, ROUND(budget, 2) budget, ROUND(spend, 2) spend,
+  ROUND(roi, 3) roi, ROUND(profit, 2) profit, matched_rules
+FROM b WHERE bucket LIKE '1%' OR bucket LIKE '2%'
+QUALIFY ROW_NUMBER() OVER (PARTITION BY bucket ORDER BY profit) <= 5
+ORDER BY bucket, profit
+"""
+
+# %% 1 — what the rule did
+qr(BLOCK_A)
+
+# %% 2 — did it stop the bleeding?
+qr(K_BLEEDING)
+
+# %% 3 — peers and missed
+qr(K_PEERS)
+
+# %% 4 — impact: rule total and verdict
+qr(K_IMPACT)
+
+# %% 4 — impact per decision, most missed income first
+qr(K_IMPACT_DECISIONS)
+
+# %% 5 — data issues
+qr(K_ISSUES)
+
+# %% ACC-04 leftovers — losers and winners no rule acted on
+q(K_LEFTOVER)
+
+# %% ACC-04 leftovers — by matched rule
+q(K_LEFTOVER_BY_RULE)
+
+# %% ACC-04 leftovers — 5 biggest losers per bucket
+q(K_LEFTOVER_TOP)

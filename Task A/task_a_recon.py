@@ -72,7 +72,7 @@ FROM $.performance WHERE account_name = 'ACC-03' GROUP BY date ORDER BY date
 # * THE DEDUP: DISTINCT drops the 72 identical copies from CH.1. 4947 -> 4875.
 q("CREATE OR REPLACE VIEW $.performance_scoped AS SELECT DISTINCT * FROM $.performance")
 
-# * then filter the rest to adsets that actually spent
+# * then filter the rest to adsets that appear in performance (17 of 1000 never spent — CH.8b)
 for table in ["metadata", "rule_executions", "buyer_actions"]:
     q(f"""
     CREATE OR REPLACE VIEW $.{table}_scoped AS
@@ -281,4 +281,159 @@ FROM $.performance_scoped GROUP BY date ORDER BY date
 # ! spend_rev_null = 0 every day, 06-12 included. Revenue delay is NOT visible as blanks.
 # * rule_executions nulls are structural too: last_3_days_* <=> total_days < 3,
 # * current_budget_from_fb <=> response != SUCCESS, today_rpc <=> today ROI = -1.
-# TODO find the delay another way (est/fb conv ratio 1.04 -> 1.10 on 06-11).
+# * found another way — CH.7d (end-of-day totals) and CH.7e (rule snapshots).
+
+# %% CH.7d  DELAY, END-OF-DAY — do the last days look short on conversions/revenue?
+q("""
+SELECT date,
+       ROUND(SUM(spend))                                                      AS spend,
+       ROUND(SAFE_DIVIDE(SUM(revenue), SUM(spend)), 3)                        AS roas,
+       SUM(fb_conversions)                                                    AS fb_conv,
+       ROUND(SUM(estimated_conversions))                                      AS est_conv,
+       ROUND(SAFE_DIVIDE(SUM(estimated_conversions), SUM(fb_conversions)), 3) AS est_over_fb,
+       ROUND(SAFE_DIVIDE(SUM(revenue), SUM(estimated_conversions)), 3)        AS rev_per_est,
+       COUNTIF(spend = 0 AND fb_conversions > 0)                              AS late_fb_conv_rows,
+       COUNTIF(spend = 0 AND revenue > 0)                                     AS late_rev_rows,
+       COUNTIF(spend > 0 AND fb_conversions > 0 AND revenue = 0)              AS conv_no_rev_rows
+FROM $.performance_scoped GROUP BY date ORDER BY date
+""")
+# * no end-of-week hole: 06-12 ROAS 1.06, rev/conv 0.45 — in line with the week.
+# * est/fb steady ~1.045 every day -> FB is not lagging the internal model day-to-day.
+# ! 06-11 is the odd day: est/fb 1.10, rev/conv 0.54, all accounts -> looks like a catch-up.
+# * zero-spend rows with conversions: 2-6 a day, spread evenly -> not a lag pile-up.
+# ! 06-06: 10 rows with conversions but $0 revenue — the most of any day.
+# ? the file is a settled snapshot; the delay has to be seen at decision time -> CH.7e.
+
+# %% CH.7e1  DELAY, AFTER THE DAY — engine's 3-day view vs final revenue
+# ? last_3_days_* is what the engine saw. Spend has no delay, so it tells us the window;
+# ? ROI then tells us whether revenue for those days had already fully arrived.
+q("""
+WITH w AS (
+  SELECT rx.action_time, rx.adset_id,
+         rx.last_3_days_spend_at_action AS seen_spend, rx.last_3_days_roi_at_action AS seen_roi,
+         SUM(IF(CAST(p.date AS DATE) BETWEEN DATE_SUB(CAST(rx.action_date AS DATE), INTERVAL 3 DAY)
+                                         AND DATE_SUB(CAST(rx.action_date AS DATE), INTERVAL 1 DAY), p.spend, 0))   AS final_spend,
+         SUM(IF(CAST(p.date AS DATE) BETWEEN DATE_SUB(CAST(rx.action_date AS DATE), INTERVAL 3 DAY)
+                                         AND DATE_SUB(CAST(rx.action_date AS DATE), INTERVAL 1 DAY), p.revenue, 0)) AS final_rev,
+         COUNT(DISTINCT IF(CAST(p.date AS DATE) BETWEEN DATE_SUB(CAST(rx.action_date AS DATE), INTERVAL 3 DAY)
+                                                    AND DATE_SUB(CAST(rx.action_date AS DATE), INTERVAL 1 DAY), p.date, NULL)) AS days_in_data
+  FROM $.rule_executions_scoped rx JOIN $.performance_scoped p USING (adset_id)
+  WHERE rx.last_3_days_spend_at_action IS NOT NULL
+  GROUP BY 1, 2, 3, 4
+)
+SELECT COUNT(*)                                                               AS rows_tested,
+       COUNT(DISTINCT adset_id)                                               AS adsets,
+       COUNTIF(ABS(SAFE_DIVIDE(seen_spend, final_spend) - 1) < 0.02)          AS spend_matches_prev_3_days,
+       COUNTIF(final_spend >= 1)                                              AS rows_spend_over_1usd,
+       COUNTIF(final_spend >= 1
+           AND ABS(seen_roi - SAFE_DIVIDE(final_rev - final_spend, final_spend)) <= 0.015) AS roi_matches_final,
+       STRING_AGG(IF(final_spend >= 1
+           AND ABS(seen_roi - SAFE_DIVIDE(final_rev - final_spend, final_spend)) > 0.015,
+           CONCAT(action_time, ' seen ', CAST(seen_roi AS STRING), ' final ',
+                  CAST(ROUND(SAFE_DIVIDE(final_rev - final_spend, final_spend), 2) AS STRING)), NULL)) AS misses
+FROM w WHERE days_in_data = 3
+""")
+# * spend matches the 3 days BEFORE action_date on 31/31 -> last_3_days_* = d-3..d-1, today excluded.
+# * ROI matches final on 27/29 (2 rows dropped: $0.03 spend, rounding noise).
+# * so revenue for a finished day is complete by the next day — no multi-day backfill.
+# ! both misses fired 22:30-23:30 UTC, logged on the next date: the "previous day" was
+# ! still arriving (06-11 seen 0.05, final 0.39). Rollover decisions read unsettled revenue.
+# ! last_3_days_revenue_at_action is 2-5x performance revenue and grows intraday — a different
+# ! measure, not usable. Small sample: 31 rows, 8 adsets (the rest had < 3 days of history).
+
+# %% CH.7e2  DELAY, INSIDE THE DAY — revenue seen at action vs the day's final
+# ? revenue at action = spend_at_action * (1 + today_roi_at_action).
+q("""
+WITH p AS (SELECT adset_id, date, SUM(spend) AS spend, SUM(revenue) AS revenue
+           FROM $.performance_scoped GROUP BY 1, 2),
+b AS (
+  SELECT CASE WHEN EXTRACT(HOUR FROM TIMESTAMP(rx.action_time)) < 7  THEN '1) 00-06 UTC'
+              WHEN EXTRACT(HOUR FROM TIMESTAMP(rx.action_time)) < 13 THEN '2) 07-12 UTC'
+              WHEN EXTRACT(HOUR FROM TIMESTAMP(rx.action_time)) < 21 THEN '3) 13-20 UTC'
+              ELSE '4) 21-23 UTC (next reporting date)' END AS time_band,
+         rx.spend_at_action, rx.spend_at_action * (1 + rx.today_roi_at_action) AS rev_at_action,
+         p.spend AS final_spend, p.revenue AS final_rev
+  FROM $.rule_executions_scoped rx
+  JOIN p ON p.adset_id = rx.adset_id AND CAST(p.date AS DATE) = CAST(rx.action_date AS DATE)
+  WHERE rx.today_roi_at_action IS NOT NULL AND p.spend > 0
+)
+SELECT time_band, COUNT(*) AS executions,
+       ROUND(SAFE_DIVIDE(SUM(spend_at_action), SUM(final_spend)), 2) AS spend_share_seen,
+       ROUND(SAFE_DIVIDE(SUM(rev_at_action), SUM(final_rev)), 2)     AS revenue_share_seen,
+       ROUND(SAFE_DIVIDE(SUM(rev_at_action), SUM(spend_at_action)), 2) AS roas_at_action,
+       ROUND(SAFE_DIVIDE(SUM(final_rev), SUM(final_spend)), 2)       AS roas_final
+FROM b GROUP BY 1 ORDER BY 1
+""")
+# ! revenue arrives behind spend inside the day. ROAS at action vs final:
+# ! 00-06 UTC 0.85 vs 1.09 | 07-12 UTC 0.54 vs 0.68 | 21-23 UTC 0.24 vs 1.16.
+# * 13-20 UTC (117 of 214 firings): 0.74 vs 0.73 — by then revenue has caught up.
+# ! 21-23 UTC: 85% of the day's spend seen but only 18% of its revenue -> worst read.
+# * THE DELAY: intraday, closes by ~13 UTC or the next day. Early and rollover firings judge
+# * ROI on missing revenue -> look worse than they are. Flag these in rule analysis.
+# ? FB conversion delay can't be tested here: rule_executions has no conversion columns.
+
+
+# =============================================================================
+#  CH.8  VALIDATE THE CLEANING — did the views remove exactly what we meant?
+# =============================================================================
+
+# %% CH.8a  KEYS & IDS — dedup worked, no hidden id problems, nothing lost downstream
+q(r"""
+SELECT 'performance' AS t, COUNTIF(adset_id != TRIM(adset_id)) AS id_whitespace,
+       COUNTIF(NOT REGEXP_CONTAINS(adset_id, r'^[0-9]+$')) AS id_non_digit, COUNTIF(adset_id IS NULL) AS id_null,
+       (SELECT COUNT(*) FROM $.performance_scoped) AS scoped_rows,
+       (SELECT COUNT(DISTINCT CONCAT(adset_id, '|', CAST(date AS STRING))) FROM $.performance_scoped) AS scoped_keys
+FROM $.performance
+UNION ALL SELECT 'metadata', COUNTIF(adset_id != TRIM(adset_id)), COUNTIF(NOT REGEXP_CONTAINS(adset_id, r'^[0-9]+$')),
+       COUNTIF(adset_id IS NULL), (SELECT COUNT(*) FROM $.metadata_scoped), (SELECT COUNT(DISTINCT adset_id) FROM $.metadata_scoped)
+FROM $.metadata
+UNION ALL SELECT 'rule_executions', COUNTIF(adset_id != TRIM(adset_id)), COUNTIF(NOT REGEXP_CONTAINS(adset_id, r'^[0-9]+$')),
+       COUNTIF(adset_id IS NULL), (SELECT COUNT(*) FROM $.rule_executions_scoped), (SELECT COUNT(DISTINCT TO_JSON_STRING(r)) FROM $.rule_executions r)
+FROM $.rule_executions
+UNION ALL SELECT 'buyer_actions', COUNTIF(adset_id != TRIM(adset_id)), COUNTIF(NOT REGEXP_CONTAINS(adset_id, r'^[0-9]+$')),
+       COUNTIF(adset_id IS NULL), (SELECT COUNT(*) FROM $.buyer_actions_scoped), NULL
+FROM $.buyer_actions
+""")
+# ? scoped_keys: performance = distinct (adset,date); metadata = distinct adsets; rule_executions = distinct raw rows.
+
+# %% CH.8b  WHAT THE SCOPE FILTER DROPPED — only what we meant to?
+q("""
+SELECT 'buyer_actions' AS t, object_type AS detail, COUNT(*) AS dropped_rows
+FROM $.buyer_actions
+WHERE adset_id IS NULL OR adset_id NOT IN (SELECT adset_id FROM $.performance_scoped)
+GROUP BY object_type
+UNION ALL
+SELECT 'metadata', CONCAT(account_name, ' id_len ', CAST(id_len AS STRING)), COUNT(*)
+FROM (SELECT account_name, LENGTH(adset_id) AS id_len FROM $.metadata
+      WHERE adset_id NOT IN (SELECT adset_id FROM $.performance_scoped))
+GROUP BY account_name, id_len
+UNION ALL
+SELECT 'performance', 'adsets with zero spend all week', COUNT(*)
+FROM (SELECT adset_id FROM $.performance_scoped GROUP BY adset_id HAVING SUM(spend) = 0)
+ORDER BY t, detail
+""")
+
+# %% CH.8c  METRIC SANITY — do the numbers agree with each other?
+q("""
+SELECT COUNTIF(spend < 0 OR revenue < 0 OR clicks < 0 OR fb_conversions < 0)                 AS negatives,
+       COUNTIF(ABS(profit - (revenue - spend)) > 0.01)                                      AS profit_mismatch,
+       COUNTIF(spend > 0 AND ABS(roi - SAFE_DIVIDE(revenue - spend, spend)) > 0.01)         AS roi_mismatch,
+       COUNTIF(clicks > impressions)                                                        AS clicks_gt_impressions,
+       COUNTIF(fb_conversions > clicks)                                                     AS fb_conv_gt_clicks,
+       COUNT(DISTINCT IF(fb_conversions > clicks, account_name, NULL))                      AS fb_conv_gt_clicks_accounts
+FROM $.performance_scoped
+""")
+
+# %% CH.8d  OUTLIER — how big is adset 31302925337341 inside ACC-04?
+q("""
+WITH a AS (SELECT adset_id, SUM(spend) AS spend, SUM(revenue) AS revenue, COUNTIF(spend > 0) AS spend_days
+           FROM $.performance_scoped WHERE account_name = 'ACC-04' GROUP BY adset_id)
+SELECT ROUND(MAX(IF(adset_id = '31302925337341', spend, NULL)))                         AS adset_spend,
+       ROUND(MAX(IF(adset_id = '31302925337341', SAFE_DIVIDE(revenue, spend), NULL)), 2) AS adset_roas,
+       MAX(IF(adset_id = '31302925337341', spend_days, NULL))                           AS adset_spend_days,
+       ROUND(SUM(spend))                                                                AS acc04_spend,
+       ROUND(SAFE_DIVIDE(MAX(IF(adset_id = '31302925337341', spend, NULL)), SUM(spend)), 2) AS share_of_acc04,
+       ROUND(APPROX_QUANTILES(spend, 100)[OFFSET(50)], 1)                               AS median_adset_spend,
+       ROUND(MAX(IF(adset_id != '31302925337341', spend, NULL)))                        AS next_biggest_adset
+FROM a
+""")

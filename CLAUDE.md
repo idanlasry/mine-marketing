@@ -28,7 +28,7 @@ Everything lives in BigQuery as a chain of views, so fixing scope upstream propa
 
 1. **Raw tables** (`load_bigquery.py`): `performance`, `rule_executions`, `auto_rules`, `metadata`, `buyer_actions`. ID columns (`adset_id`, `campaign_id`, `fb_ad_account_id`, `account_id`) are loaded as STRING — 18-digit IDs lose precision as INT64. CSVs must be read with `encoding="utf-8"` (metadata crashes under cp1252).
 2. **Scoped views** (`task_a_recon.py`, CH.2): the *only* place rows are removed. `performance_scoped` = `SELECT DISTINCT *` (drops 72 byte-identical duplicate rows for ACC-03 on 06-09; 4947 → 4875). `metadata_scoped`, `rule_executions_scoped`, `buyer_actions_scoped` are filtered to adsets present in `performance_scoped`. Only CH.1 reads raw tables; all later analysis reads `*_scoped` or later.
-3. **Selection views** (`task_A_script.py`): `perf_sel`, `rx_sel`, `rules_sel` narrow to working columns; analysis queries read these.
+3. **Selection views** (`Archive/task_A_script_v1.py`): `perf_sel`, `rx_sel`, `rules_sel` narrow to working columns; the earlier exploration queries read these. The current rule template, `Task A/task_A_script.py`, reads the `*_scoped` views directly and is run per rule with `.claude/skills/rule-analysis/run_rule.py <RULE>` (or `leftover` for ACC-04 adset-days no rule acted on). Rule conditions live in its `CONDITIONS` dict, replayed as `condition_name`. Earlier template versions: `Archive/task_A_script_v1.py`, `_v2.py`.
 
 Query helper convention used in every script: `q(sql)` replaces the token `$.` with the fully-qualified `` `first-proj001.mine_marketing`. `` prefix and returns a DataFrame. The token is `$.` (not `$`) so regex anchors in SQL survive.
 
