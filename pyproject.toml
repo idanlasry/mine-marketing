@@ -1,0 +1,18 @@
+[project]
+name = "mine-marketing"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "bigquery>=0.0.30",
+    "db-dtypes>=1.7.1",
+    "dotenv>=0.9.9",
+    "duckdb>=1.5.5",
+    "google-cloud-bigquery>=3.45.0",
+    "ipykernel>=7.3.0",
+    "numpy<2.4",
+    "pandas>=3.0.5",
+    "pandas-gbq>=0.35.2",
+    "python-dotenv>=1.2.3",
+]
