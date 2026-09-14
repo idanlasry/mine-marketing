@@ -95,7 +95,8 @@ Input: one JSON with
 
 Actions:
 - wait: no change now, look again after hours (1, 2 or 4)
-- diminish: cut current_budget by amount_pct, 15-40 in steps of 5
+- diminish: cut current_budget by amount_pct, 15-40 in steps of 5. The new budget must stay >= 1 USD
+  (Meta rejects lower daily budgets): if the cut would go below, pause or escalate instead
 - pause: pause for hours (1, 2 or 4), then it comes back to you. Used on small or new adsets to see whether revenue comes in
 - unpause: restore budget by amount_pct of current_budget, never above buyer_budget (after an earlier cut or pause)
 - untrack: stop tracking; only when restored AND ROI is back: current_budget equals buyer_budget and roi_now >= 0.

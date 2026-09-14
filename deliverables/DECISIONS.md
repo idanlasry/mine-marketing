@@ -77,3 +77,10 @@ I've discussed with Claude the inputs and outputs that the decision agent will n
 - Most of it had already been figured out in part 3, The economics. I'm reordering with Claude and locking the new table I'll need to keep track of the agent.
 - Sonnet, as far as I can guess, can handle the decision task. Anyway, prompt eval tests can be made to check both the prompt and the model.
 - Claude did a loop diagram, with some edits, to my satisfaction.
+
+-------Task C — Decision agent build ---------------
+
+### 1. Minimum budget
+- The agent's budget cuts went below realistic budgets (1.27 → 0.95 USD). Meta rejects daily budgets under its minimum (~1 USD), and our own rules already use "min 9".
+- 3 calls ended as `failed_below_min_budget` in the execution status.
+- Decision: the prompt now says a cut must keep the budget at 1 USD or more; otherwise pause or escalate.
