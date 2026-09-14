@@ -228,6 +228,22 @@ def apply(d, agent_input):
     return None, 0.0
 
 
+MIN_BUDGET = 1.0  # ? Meta rejects daily budgets under its minimum (~1 USD); the rules here use "min 9"
+
+
+def execution_status(action, amount):
+    """Was the decision updated? Replay: simulated executor. Production: the Meta API response."""
+    if action == "escalate":
+        return "pending_human"
+    if action in ("wait", "untrack"):
+        return "no_change"
+    if action in ("diminish", "unpause") and (amount is None or pd.isna(amount)):
+        return "failed_no_budget"
+    if action in ("diminish", "unpause") and amount < MIN_BUDGET:
+        return "failed_below_min_budget"
+    return "applied"
+
+
 # %% 6. Run the loop and log
 # Two logs:
 #   bar_check_log: one row per adset checked (every run; grows fast at every 30 min live)
@@ -313,6 +329,7 @@ new_log = pd.DataFrame([
         "adset_id": e["adset_id"], "account_name": e["account_name"], "decision_date": e["decision_date"],
         "source": e["source"], "trigger": e["trigger"], "model": e["model"],
         "action": e["final"]["action"], "brief_action": e["brief"]["action"], "amount": e["amount"],
+        "execution_status": execution_status(e["final"]["action"], e["amount"]),
         "amount_pct": e["final"]["amount_pct"], "hours": e["final"]["hours"],
         "confidence": e["final"]["confidence"], "reasoning": e["final"]["reasoning"],
         "data_quality_flags": json.dumps(e["final"]["data_quality_flags"]),
@@ -324,7 +341,9 @@ new_log = pd.DataFrame([
     }
     for e in agent_log[len(seed):]
 ])
-pd.concat([old_log, new_log]).sort_values(["decision_date", "account_name"]).to_csv(LOG, index=False, encoding="utf-8")
+out = pd.concat([old_log, new_log]).sort_values(["decision_date", "account_name"])
+out["execution_status"] = [execution_status(a, m) for a, m in zip(out["action"], out["amount"])]  # rows logged before the column
+out.to_csv(LOG, index=False, encoding="utf-8")
 
 print(
     f"{'DRY RUN, ' if DRY_RUN else ''}{len(bar_check_log)} bar checks, {llm_calls} LLM calls, "
