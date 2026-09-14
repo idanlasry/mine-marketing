@@ -49,21 +49,21 @@ Source: `task_A_script.py` RULE.1. At action = `today_roi_at_action` of the firs
 **Caveats.**
 - If two rules acted on the same adset-day, its spend counts under both rules, so the totals may be slightly high.
 - The end-of-day check covers only the action day. Whether a killed adset would have recovered later in the week is the $ impact step.
-- "At action" ROI reads too low early in the day (data issue 11), so some "flippers" were never real losers.
+- "At action" ROI reads too low early in the day (data issue 6), so some "flippers" were never real losers.
 
 # 1- computing the rules outcome
 
 ### Calculations rule by rule
 #### Rule calculation formula:
-##### Ive decided to calculate the roles preformence differantly for the two main types of rules. from after rule one, ive analysis ive built a skill analysing and building metadat tabales on each rule
+##### Ive decided to calculate the rules performance differently for the two main types of rules. after rule one's analysis I've built a skill analysing and building metadata tables on each rule
 - Cut budget rules: (ROI at close) × budget removed, counted only if the whole day's spend ≥ 95% of the new budget. Action day only.
-- Turn-off rules: (the adset's average daily profit on its spend 3 days before the action). No history (day 1) → flagged and roi*0.8 of daily original budget. its might be missing future days but it suppoused to punish uncertainty
+- Turn-off rules: −(accumulated ROI over the 3 days before the action) × the action day's spend. No history (day 1) → flagged, −(ROI at close) × the action day's spend. It might be missing future days but it is supposed to punish uncertainty
 
 #### rule 1 (task_A_script.py:227): break even
 - Break even, 3 adsets fired, two lost with a day before loses, one flipped and earned (it also earned the day before)
-- 65 Misses adsets that could have been fire but dident, which is good but weird, otherwise 383$ of profit would been lost
-#### rule 2- breaks even
-#### rule 3- right on 10/10, saving + 12.68
+- 62 missed adset-days (20 adsets) that could have been fired but didn't, which is good but weird, otherwise $384 of profit would have been lost
+#### rule 2- breaks even, +$1.63 (losers +3.28, winners −1.65)
+#### rule 3- right on 10/10, saving +$0.63
 #### rule 4 -+$20
 - 70 repeat firings on adsets already turned off
 - its harder to tell what is the real savings, but I've decided to go to budget saved * 0.5 (other small 1 day adsets in other account reached only 0.65 of their budget + I guess some revenue will add up)
@@ -83,7 +83,7 @@ Bottom line All rules
 | **ACC-04** | **+46.31** | **−25.16** | **+21.15** (+21.22 with the R05/R06 overlap counted once) |
 
 #### Major take-aways are:
-- budget cut rules was pure losses, just wasn't worth it. due to the revenue delay the engine cut winners more then loosers
+- budget cut rules lost money overall (−$10.17, though R02 and R12 were positive), just wasn't worth it. due to the revenue delay the engine cut as many winners as losers (6 / 6), and the winners were bigger: −$14.78 vs +$4.61
 - Turn-off rules was not smart enough on old adsets (blindly killing)
 - R04 did the most of the savings. most of the new, small adsets losing money(over all acounts), the rule cut them properly, with more accurate, or smart agent, it can keep those who delayed while keeping the spends tight
 
@@ -125,4 +125,4 @@ well. its just bad rule, if budget is more than 100, that probably means the ad 
 | 4 | Many failed runs | 50 of 214 executions: R03 19, R02 17 (13 on one adset on 06-09), R09 8 of 8 | counted, $0 impact; separate analysis deferred |
 | 5 | Duplicate performance rows | looked for dups in the performance table, deliberately | `performance_scoped` = `SELECT DISTINCT` (4,947 → 4,875) |
 | 6 | Revenue delay within the day | deliberately looked for revenue gap in the data sets, found that between the recurring rules failed executions | using it.. it is a bad feature of the engine, it needs to take into account when planning automations and rules |
-| 7 | Spend far above the adset budget | it popped up when I look at the characteristic of the rule one activated adsets (the table of the skill show spend and budget side by side). adset 31191755212537 for example has spent 41–72 every day on a $7.62–12.70 budget (Meta overspend allows up to 1.75×, according to Claude), with no matching buyer change. it might be a bug or an engine feature of shark adsets | rules diminish impact on these adsets was zeroed |
+| 7 | Spend far above the adset budget | it popped up when I look at the characteristic of the rule one activated adsets (the table of the skill show spend and budget side by side). adset 31191755212537 for example has spent 41–72 every day on a $7.62–12.70 budget (Meta overspend allows up to 1.75×, according to Claude), with no matching buyer change. it might be a bug or an engine feature of shark adsets | flagged, still counted (the 95% check uses the whole day's spend, e.g. R02's cut on 31191755212537 counted −$1.32) |

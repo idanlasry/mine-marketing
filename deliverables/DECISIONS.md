@@ -1,7 +1,7 @@
 ## Phase 0 — recon (`task_a_recon.py`)
 
-ive Loaded the CSVs into BigQuery and asked Claude to check that all tables connect by keys. I investigated the findings further in `task_a_recon.py. i did some back and forth prompting to grasp a hunch on the data, crystelising on insight and EDA queries.
-every insight below is in py script as SQL views.
+I've loaded the CSVs into BigQuery and asked Claude to check that all tables connect by keys. I investigated the findings further in `task_a_recon.py`. I did some back-and-forth prompting to grasp a hunch on the data, crystallising on insights and EDA queries.
+Every insight below is in the py script as SQL views.
 
 ### 1. Duplicates
 
@@ -25,46 +25,55 @@ every insight below is in py script as SQL views.
 
 ### 5. Revenue delay
 
-- **Finding:** the delay is within the day. Revenue for a finished day is complete by the next day But rules firing at 00–12 UTC or 21–23 UTC see ROI far below the day's final 
+- **Finding:** the delay is within the day. Revenue for a finished day is complete by the next day, but rules firing at 00–12 UTC or 21–23 UTC see ROI far below the day's final.
 - **Decision:** flag early and rollover firings — their "profit before" reads too low, so those rules look like they stopped bigger losses than they did.
 
-## Task 1 (`Invastigation.md`, `task_a_script.py`)
+## Task 1 (`INVESTIGATION.md`, `task_a_script.py`)
 
 ### Step 1. Segment the rules
 
-- ive Asked Claude Code to segment the 12 rules into major groups (in invastigation.md)
-- asked claude to drill down on ACC_04 becuse is the one who got the auto
- rules active. i checkd how many losers and winners adsets was each day, as well, i furthur asked it to compare to other accounts to look for a trend in winning/losing. claude answer: ACC-04's share of losing adsets drops! but also has less new adsets toword the end, but no higher Roi or less losers over the week
- - asked for rule view table :definition, unique adsets, fails, repeats, successes, losers and winners at action (ROI when the rule fired), and losers and winners at end of day (from performance).
- - estimate the cost on cutting winners (loser when the rule fired, winner by the end of the day ) 
-- to decide wheather the rules did good or not ive decided to check eachrule by itself
-- after ive runed the analysis for rule 1 and 2, asked it about the datasets the rule capture, data issues, roi analysis and win/lose cumpotation, ive asked claude to create a skill for easier prompt and analysis of the next rules
--after revision of rule two, i decided on calculation of lose or win 
-  for cut budget rules is (ROI at close) × budget removed, counted only if the whole day's spend ≥ 95% of the new budget. Action day only.
-  Turn-offrules: (the adset's average daily profit on its spend days before the action) × days left in the data. No history (day 1) → flagged, no value. No days left → $0
-- ive runed the skill on all the others rule to get a assess of the rule changes.
-- for Q 2. i called the skill tabels for rules 10, 1, and after reviewing the rules name and decided their are too blind to be good.
+- I've asked Claude Code to segment the 12 rules into major groups (in INVESTIGATION.md).
+- Asked Claude to drill down on ACC-04 because it is the one that got the auto-rules active. I checked how many loser and winner adsets there were each day; as well, I further asked it to compare to other accounts to look for a trend in winning/losing. Claude's answer: ACC-04's share of losing adsets drops! But it also has fewer new adsets toward the end, and no higher ROI or fewer losers over the week.
+ - Asked for a rule view table: definition, unique adsets, fails, repeats, successes, losers and winners at action (ROI when the rule fired), and losers and winners at end of day (from performance).
+ - Estimate the cost of cutting winners (loser when the rule fired, winner by the end of the day).
+- To decide whether the rules did good or not, I've decided to check each rule by itself.
+- After I ran the analysis for rules 1 and 2, asked it about the adsets the rule captures, data issues, ROI analysis and win/lose computation, I asked Claude to create a skill for easier prompting and analysis of the next rules.
+- After revision of rule 2, I decided on the calculation of lose or win:
+  for cut-budget rules it is (ROI at close) × budget removed, counted only if the whole day's spend ≥ 95% of the new budget. Action day only.
+  Turn-off rules: (the adset's average daily profit on its spend days before the action) × days left in the data. No history (day 1) → flagged, no value. No days left → $0
+- I ran the skill on all the other rules to get an assessment of the rule changes.
+- For Q2, I called the skill tables for rules 10 and 1, and after reviewing the rule names, decided they are too blind to be good.
 
 
 -------Task B — architecture (logged 2026-09-13 17:57) ---------------
-Asked Claude to choose between prompt chaining, routing, parallelization and orchestrator-workers.
+First decision is the architecture, and "agent" is a biased word (as I see it).
+Basically, I prefer to use chained LLM prompts with the right code harness and routing in code.
+Orchestrator-workers is denied after debating it with Claude, due to its unpredictable and less auditable nature.
+LLM chaining can be forced with good structure and fixed against $30/day.
 
-Decision: prompt chaining as the backbone, routing in code, adsets run in parallel. Orchestrator-workers rejected for the live loop — its cost is unpredictable against the $30/day cap and it has no fixed place to enforce limits.
-
-Pushback (mine): "many agents" is mostly hype — it's LLM prompts inside a good harness. Kept the brief's role vocabulary, but the doc says only 2 roles are LLMs (Decision, Reviewer) and the rest is code.
-
-Rejected: Claude's long, multi-section discussion replies — asked for short answers.
+### 1. Topology
 
 Decision (my design): phase 1 handles losers only. Actions: wait / diminish / pause_for X hours / revive in +30% steps up to the manager's budget. Pause only after 2 LLM interventions without recovery. The LLM is prompted again when its wait expires or ROI reverses or dips.
 
-Changed: Claude flagged a conflict between the auto-rules and the agent and suggested locks. I chose an A/B test on different accounts instead.
+### 2. Decision Boundaries
+ I've argued my takes on agent capabilities (one major one I've added: to pause and wait for revenue to accumulate) and asked Claude to push back. It suggested some fine-tuning:
+   1. A confidence score of agent orders < 0.6: the agent doesn't know, so it doesn't guess
+   2. Shark adsets definition
+And helped structure it in the md file.
 
-Decision: test on ACC-02, a middle account, not the worst one. Claude's per-account query backed it: ACC-05 has too little spend to prove anything.
+### 3. The economics
+I've discussed with Claude the inputs and outputs that the decision agent will need. I suggested a few JSON tables and Pydantic outputs; it gave me some rejection, but the better insight was that I can use caching with a few-shot prompt: I can easily cache a 2,000-token system prompt.
+- Another discussion was on the trigger of the agent. I wanted ROI and spend bars which differ by the age of the adsets; Claude suggested raising the spend bar (to screen out 200 calls of small new adsets) and adding a time argument to the LLM call so it can relate to the lag in revenue. Nice!
+- A decision that in the morning an agent can't pause, only wait or diminish, and can pause an adset only after noon. I chose that it can pause for up to 2 hours.
+- Agent bar: I wanted to set a bar for targeting an adset for the agent loop. I devised a bar that would get 25% of the adsets; Claude revised it and suggested a bar that will clean noise yet include losses. It used a query, `trigger_reach.py`, to find the right bar, and I've settled on a bar that targets 47% of losses — approx. 32 adsets in the agent loop each day.
+- I've asked Claude to compute an average scenario and a hard-day scenario of costs, both below the 30 dollars spend.
 
-Decision: dropped the "same time yesterday" baseline — the engine's readings aren't stored and the snapshot is daily. Kept Claude's pushback: a 4 h time-of-day guard, because early-day ROI reads too low.
+### 4. Failure modes
+- I've asked Claude to criticise me and list 5 failure modes.
+- It listed five: revenue lag read as a loss, better ROI by shrinking spend, too many budget edits, bad or stale data, fighting the buyer. I thought on adjusted handling, and also thought on: missing big losers, not catching losers in time, letting losers continue to spend, loads of LLM calls due to data mismatch.
+5 were chosen; there could be more.
 
-Decision: 30-min ROI checks only for adsets the agent is working on. Sharks (big ROI + big spend) → notify a human only.
-
-Rejected: Claude's detailed Pydantic input/output schemas and its 9-table design — too complex for the assignment. Kept a short step / input / output flow per agent (Decision, Reviewer) and 2 tables (`interventions`, `agent_log`); more tracking tables noted for later.
-
-Open: the §3 thresholds are Claude's starting values from ACC-02 data, not yet approved.
+### 5. Data flow
+- Most of it had already been figured out in part 3, The economics. I'm reordering with Claude and locking the new table I'll need to keep track of the agent.
+- Sonnet, as far as I can guess, can handle the decision task. Anyway, prompt eval tests can be made to check both the prompt and the model.
+- Claude did a loop diagram, with some edits, to my satisfaction.
