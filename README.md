@@ -1,6 +1,6 @@
 Hi,
 Thank you for the assignment.
-So basically every task is standalone and can be found the md files in the 'Deliverables' folder suppurted by scripts nad files in each task dedicated folder. DECISIONS.md will complement all the tasks with ,most, of my logs and decisions.
+So basically every task is standalone and can be found in the md files in the 'deliverables' folder, supported by scripts and files in each task's dedicated folder. DECISIONS.md will complement all the tasks with , most, of my logs and decisions.
 
 **How to run**
 - Setup: Python 3.13 with `uv`; run `uv sync`. BigQuery (project `first-proj001`, dataset `mine_marketing`) uses Google ADC auth. Put `ANTHROPIC_API_KEY=...` in `.env` for Task C.
