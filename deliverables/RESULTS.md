@@ -4,13 +4,13 @@
 
 **Run:** [Task C/agent.py](../Task%20C/agent.py)
 
- - one 02:00 call per adset a day 
+ - One 02:00 call per adset a day
  - Haiku 4.5 as a test model (production: Sonnet 5)
  - 837 active adset-days checked
  - 107 passed the bar or were re-called and went to the LLM
  - LLM cost: 0.34 USD for 107 calls (0.0032 USD per call).
 
-- **Every active adset gets a decision:** adsets under the bar get `keep` from code, logged in `bar_check_log.jsonl`. LLM decisions are in [Task C/agent_log.csv](../Task%20C/agent_log.csv), one row per call.
+- **Every active adset gets a decision:** adsets under the bar get `keep` from code, logged in `bar_check_log.jsonl`. LLM decisions are in [Task C/agent_log.csv] one row per call.
 - **Data caveat:** the snapshot has full-day sums only, no 30-minute engine runs, so the replay has one 02:00 check per day and no intraday re-calls.
 
 ### Output: the brief's schema + extra fields
@@ -73,10 +73,10 @@ The agent is told not to guess, and code enforces it in layers:
 
 **It worked on the unclear cases.** 15 of 107 calls escalated, all at confidence 0.35–0.50. The clearest case is an ACC-04 adset with conversions but zero revenue on 3 days in a row. The agent flagged a possible attribution break and escalated it on each call rather than cutting or keeping. Other escalations: a day-1 adset spending 41 USD against a 3.81 USD buyer budget, and a −90% ROI right after the buyer's own 50% cut.
 
-**Weak spots:** 
-- confidence is the model's own number and isn't calibrated.
--  every escalation came from the model itself.
--  low confidance level and 'escalate' decision is easy decision that give mothing, but its the start of what we can improve and adjust
+**Weak spots:**
+- Confidence is the model's own number and isn't calibrated.
+- Every escalation came from the model itself.
+- A low confidence level and an 'escalate' decision is an easy decision that gives nothing, but it's the start of what we can improve and adjust.
 
 
 
@@ -84,35 +84,37 @@ The agent is told not to guess, and code enforces it in layers:
 
 The Refactor agent from ARCHITECTURE.md ("the reporter") improves the Decision agent without retraining a model. 
 
-- **Signal it learns from:** each decision's outcome at day + 2, once revenue is final and the datasets have a clear view of how the intevantion worked whether the buyer also changed the budget, and whether the agent's own `self_assessment` was right.
+- **Signal it learns from:** each decision's outcome at day + 2, once revenue is final and the datasets have a clear view of how the intervention worked, whether the buyer also changed the budget, and whether the agent's own `self_assessment` was right.
 - **Where it is stored:**
   - verdicts (right / wrong / unclear, and why) are git logged and findings sent to a developer to review and approve
   - one `daily_report` per day, with stats, 3 cases (worst, best, random), up to 3 lessons and suggested changes
   - reports accumulate, and the reporter reads its last 7, so a lesson is only proposed when a pattern repeats
 
-**Example from this replay:** after days 1–2 I reviewed the log by hand, the way the reporter would, and changed the prompt before day 3 Results taht diminish went from 0 on day 1 and 5 on day 2 to 15 on day 3.
+**Example from this replay:** after days 1–2 I reviewed the log by hand, the way the reporter would, and changed the prompt to better distinguish between a losing hiccup and a losing trend before day 3. Result: diminish went from 0 on day 1 and 5 on day 2 to 15 on day 3.
 
-caveat- this demand a fulle prompt eval checks by edege cases it finde, and also a basic eval for the starter cases right at shipping
+Caveat: this demands full prompt eval checks on the edge cases it finds, and also a basic eval for the starter cases right at shipping.
 
 ### How to measure success
 
-- **Primary metric: A/B testing** 
-design an a/b test to determine if the the agent touched adset did better. shdow agent, diffarent accounts, random selection or auto rules tht activated similar decisions, its probably the hardest thing to figure out, how to allocate the right controll group. i thnking on segmenting each account adsets into two groups,check some a/a testing (adsets cherecharistics, goal, spend etc) and randomly allocate to one the agent, full exposure to thisgroup. with a controlled overview on the metrics (so the drop wont fall sharply) observe (on line- with picking as in basyain a/b test) the diffarence. 
-moreover keep overall traks on all the adsets that the agent touched
+- **Primary metric: A/B testing**
+Design an A/B test to determine if the agent-touched adsets did better in profit and ROI. The key part is designing the control group. I think of segmenting each account's adsets into two groups, checking some A/A testing (adset characteristics, goal, spend etc.) and randomly allocating one group to the agent, with full exposure to this group. With a controlled overview on the metrics (so the drop won't fall sharply), observe the difference online, with peeking as in a Bayesian A/B test.
+Moreover, keep overall tracks on all the adsets that the agent touched.
 
-- explore log breaks,resumes, and scale up
+- Use the reporter: check if revenue caught up, explore log breaks, resumes, and scale_up decisions in the aftermath.
 
-- an other most efficiant tool  is to keep a log of fb engive samples that are sampeled every 30 min midday, andto simulate the agent "online" decisions, and outcome. without training it, but with test evaluating the prompts.  
+- Another very efficient tool is to keep a log of FB engine samples that are sampled every 30 min midday, and to simulate the agent's "online" decisions and outcome. Without training it, but with tests evaluating the prompts.
+
 ### Where the agent is weak
 
-1. **it still lacks the important indicators** Its self-assessments say "my wait worked" when the buyer changed the budget, it needs indication what the outcome resolved properly from its onw decision.
-2. **no edge cases handalling** and no tests done
-3. **one llm calls that handell all the decision** it might be all over the place, and cahin diffarent llm calls might reolve better outcome
-4. **Tested on Haiku, not Sonnet 5,** and on daily sums, not intraday data.
-5. **Escalations are never resolved** it cant handel escallation, and it resolved easly to human handeling
+1.**there is no Kill switch or reversemethod.** just the tracking, and its a bit dagngourus
+2.**It still lacks some important indicators.** Its self-assessments say "my wait worked" when the buyer changed the budget; it needs an indication of whether the outcome resulted from its own decision.
+3. **No edge-case handling** and no tests done.
+4. **One LLM call handles all the decisions:** it might be all over the place, and chaining different LLM calls might resolve a better outcome.
+5. **Tested on Haiku, not Sonnet 5,** and on daily sums, not intraday data.
+6. **Escalations are never resolved:** it can't handle escalation, and it resolves easily to human handling.
 
-what is the real step i would take? 
-define to action it could take, pause and kill, and optimise for that, in specific cases (young, small and losing)
-optimise, varify, and eval, 
-then escallate and grow.
+What is the real step I would take?
+Define two actions it could take, pause and kill, and optimise for that in specific cases (young, small and losing).
+Optimise, verify, and eval.
+Then escalate and grow.
 
